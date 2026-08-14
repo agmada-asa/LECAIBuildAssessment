@@ -49,6 +49,21 @@ export function EvidencePanel({
         <CardContent className="space-y-4 px-4 py-4">
           <p className="text-[12px] leading-[1.65] text-foreground/85">{result.explanation}</p>
 
+          {result.conversationAssessment &&
+            result.conversationAssessment.kind !== "undetermined" && (
+              <div className="rounded-xl border bg-muted/25 p-3">
+                <p className="text-xs font-semibold">Conversation assessment</p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  {result.conversationAssessment.summary}
+                </p>
+                {result.conversationAssessment.unknowns.length > 0 && (
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                    Unknown: {result.conversationAssessment.unknowns.join("; ")}
+                  </p>
+                )}
+              </div>
+            )}
+
           {result.latestReframe && (
             <div className="rounded-xl border border-violet-200 bg-violet-50/70 p-3.5">
               <div className="flex items-center gap-2 text-violet-900">
@@ -73,9 +88,14 @@ export function EvidencePanel({
           {result.uncertain && (
             <Alert className="rounded-xl border-amber-200 bg-amber-50/70 text-amber-950">
               <HugeiconsIcon icon={Alert02Icon} className="size-4" strokeWidth={2} />
-              <AlertTitle className="text-xs font-semibold">Ask before acting</AlertTitle>
+              <AlertTitle className="text-xs font-semibold">
+                {result.humanReviewReason?.code === "insufficient_context"
+                  ? "Not enough context"
+                  : "Ask before acting"}
+              </AlertTitle>
               <AlertDescription className="text-xs leading-5 text-amber-900/80">
-                {result.uncertaintyReason} Ask: “{result.clarificationQuestion}”
+                {result.uncertaintyReason}
+                {result.clarificationQuestion && ` Ask: “${result.clarificationQuestion}”`}
               </AlertDescription>
             </Alert>
           )}

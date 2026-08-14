@@ -150,6 +150,9 @@ export function RankingPanel({
 }) {
   const winner = result.ranking[0];
   const movement = rankMovement(winner);
+  // Older persisted snapshots predate task-family confidence. Falling back to
+  // exact-candidate confidence keeps those records safe to reopen.
+  const decisionConfidence = result.decisionConfidence ?? winner.confidence;
 
   return (
     <section className="order-1 min-w-0 xl:order-2">
@@ -171,8 +174,8 @@ export function RankingPanel({
               <HugeiconsIcon icon={InformationCircleIcon} className="size-3.5" strokeWidth={2} />
             </TooltipTrigger>
             <TooltipContent className="max-w-64 text-xs">
-              Relative confidence compares the weighted evidence for these readings. It is not a
-              probability of user intent.
+              The conversation is first checked for an actionable task. Candidate confidence then
+              compares compatible readings; it does not measure whether a task exists.
             </TooltipContent>
           </Tooltip>
         </div>
@@ -191,7 +194,11 @@ export function RankingPanel({
               result.uncertain ? "bg-amber-500" : "bg-emerald-500",
             )}
           />
-          {result.uncertain ? "Human review" : "Decision ready"}
+          {result.uncertain
+            ? "Human review"
+            : result.conversationAssessment?.kind === "ordinary-conversation"
+              ? "No task detected"
+              : `Decision ready · ${percentage(decisionConfidence)}`}
         </Badge>
       </div>
 

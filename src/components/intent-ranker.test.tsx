@@ -80,6 +80,28 @@ describe("IntentRanker", () => {
     expect(correctButton).toHaveClass("w-full");
   });
 
+  it("renders legacy results that do not include a conversation assessment", () => {
+    const scenario = getScenario("finance-reframe");
+    const result = rankConversation(scenario, scenario.messages, DEFAULT_WEIGHTS);
+    const legacyResult = {
+      ...result,
+      conversationAssessment: undefined,
+    } as unknown as typeof result;
+
+    render(
+      <EvidencePanel
+        result={legacyResult}
+        selected={legacyResult.ranking[0]}
+        canSaveOutcome={false}
+        outcomeStatus=""
+        onOutcome={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText(result.explanation)).toBeInTheDocument();
+    expect(screen.queryByText("Conversation assessment")).not.toBeInTheDocument();
+  });
+
   it("labels a generated TXT timestamp as unavailable", () => {
     render(
       <ConversationPanel
