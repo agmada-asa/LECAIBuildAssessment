@@ -98,35 +98,35 @@ the same pipeline:
 
 ## P0: General contradiction and reframe handling
 
-- [ ] Represent the active value for every constraint dimension.
-- [ ] Supersede an earlier constraint when a later message changes the value,
+- [x] Represent the active value for every constraint dimension.
+- [x] Supersede an earlier constraint when a later message changes the value,
   not only when `require` changes to `forbid` for the same value.
-- [ ] Handle `slides -> CSV`.
-- [ ] Handle `no slides -> PowerPoint after all`.
-- [ ] Handle `client review -> finance ingestion`.
-- [ ] Handle a complete switch to an unrelated task.
-- [ ] Handle paraphrased reversals.
-- [ ] Handle explicit negation without triggering positive substring rules.
-- [ ] Distinguish quoted or repeated instructions from new user instructions.
-- [ ] Record the exact old and replacement constraints.
-- [ ] Associate every change with its source message.
-- [ ] Stop describing an old reframe as the latest change after unrelated later
+- [x] Handle `slides -> CSV`.
+- [x] Handle `no slides -> PowerPoint after all`.
+- [x] Handle `client review -> finance ingestion`.
+- [x] Handle a complete switch to an unrelated task.
+- [x] Handle paraphrased reversals.
+- [x] Handle explicit negation without triggering positive substring rules.
+- [x] Distinguish quoted or repeated instructions from new user instructions.
+- [x] Record the exact old and replacement constraints.
+- [x] Associate every change with its source message.
+- [x] Stop describing an old reframe as the latest change after unrelated later
   messages.
-- [ ] Add a regression test for every contradiction case.
+- [x] Add a regression test for every contradiction case.
 
 ## P0: Explain how and why the ranking changed
 
-- [ ] Preserve previous scores for every candidate and scoring axis.
-- [ ] Return semantic, constraint, history, total, confidence, and rank deltas.
-- [ ] Explain which message caused each material score change.
-- [ ] Show the previous and current winner.
-- [ ] Explain why the previous winner fell.
-- [ ] Explain why the new winner rose.
-- [ ] Clearly distinguish changed evidence from unchanged evidence.
-- [ ] Include score deltas in both the API response and the UI.
-- [ ] Explain the ranking of all candidates, not only the winner.
-- [ ] Name the most influential axis and explain why it received that weight.
-- [ ] Show both supporting and conflicting evidence.
+- [x] Preserve previous scores for every candidate and scoring axis.
+- [x] Return semantic, constraint, history, total, confidence, and rank deltas.
+- [x] Explain which message caused each material score change.
+- [x] Show the previous and current winner.
+- [x] Explain why the previous winner fell.
+- [x] Explain why the new winner rose.
+- [x] Clearly distinguish changed evidence from unchanged evidence.
+- [x] Include score deltas in both the API response and the UI.
+- [x] Explain the ranking of all candidates, not only the winner.
+- [x] Name the most influential axis and explain why it received that weight.
+- [x] Show both supporting and conflicting evidence.
 
 ## P1: Embedding-based semantic scoring
 

@@ -117,6 +117,10 @@ pnpm lint
 pnpm build
 ```
 
+The build script selects Next.js's supported webpack compiler so production
+verification also works in restricted CI environments where Turbopack workers
+cannot bind a local coordination port.
+
 The tests assert the assessment's central behaviours:
 
 1. The review-deck interpretation wins before the reframe.
@@ -177,7 +181,51 @@ Constraint rules have a dimension, value, mode, and strength. For example:
 }
 ```
 
-When a later message reverses the same dimension/value pair, the earlier constraint remains in the audit trail but is marked `superseded`. Only the active constraint contributes to the current score. The previous turn is recomputed, allowing rank movement to be derived rather than hard-coded.
+The ranker keeps one canonical active value for every populated constraint
+dimension. A later required value replaces the earlier value in that dimension,
+so `format:slides` can become `format:csv` without needing an artificial
+`forbid slides` rule. A later prohibition also replaces an earlier requirement
+for the same value.
+
+This logic is not tied to output formats or transition words. A semantic
+provider returns source-grounded `taskBoundaries` when any message replaces the
+preceding task wholesale, even if it simply changes from one unrelated topic to
+another. At that boundary the ranker supersedes every earlier active dimension
+before applying the new task's arbitrary provider-defined dimensions and
+values. A cue-free boundary is retained only when that message contains a
+grounded required `topic` or `task` constraint. This prevents an underspecified
+format or audience change from erasing the established subject.
+Semantic and historical matching use only messages from the current task, so
+replaced-task language cannot continue supporting an obsolete interpretation.
+For example, the same path handles database diagnostics becoming an
+employee-onboarding email; the ranker itself has no database or onboarding
+vocabulary. Explicit reset phrases remain a deterministic fallback when no
+semantic boundary is available.
+
+Provider constraint labels must also share meaningful language with their
+quoted source phrase. Unsupported claims inferred from omission are discarded,
+so “Make slides for management” can replace CSV and release-system constraints
+without inventing “no migration coverage” or clearing the migration subject.
+
+Every superseded constraint stays in the audit trail with its original source
+message and exact matched phrase. Reframe events contain the complete old and
+replacement constraints. Quoted or reported instructions are not treated as
+new commands, and a positive rule is suppressed when its phrase occurs inside
+an explicit negation such as `no slides`.
+
+For every conversation after its first message, the previous turn is recomputed
+and returned beside the current result. Follow-up requests include the prior
+normalized candidate catalogue, so movement is compared with the interpretations
+the user actually saw even when a provider replaces the catalogue for a new
+task. Newly introduced or removed candidates are explained without inventing
+prior ranks. Each matching candidate includes its previous
+semantic, constraint, history, total, confidence, and rank values; signed deltas;
+the source message for material changes; added, removed, and unchanged evidence;
+and a grounded explanation. `rankingChange` names both winners, explains why a
+winner changed, or records that the same interpretation remained first.
+`mostInfluentialAxis` records the normalised weight and policy rationale. The
+workbench exposes the same deltas and evidence comparison returned by
+`POST /api/rank`.
 
 ## Local model providers
 
@@ -235,7 +283,8 @@ not as public unauthenticated endpoints.
 ```
 
 `POST /api/rank` accepts `demo`, `codex`, or `codex-oss`, a canonical
-`conversation`, and optional three-axis `weights`. Success returns the producing
+`conversation`, optional three-axis `weights`, and an optional `previousInput`
+from the preceding response when ranking a follow-up. Success returns the producing
 provider, the normalized `RankingInput`, and a complete `RankingResult`. The UI
 uses that normalized input to apply later weight changes locally without calling
 the provider again. Errors use
@@ -244,6 +293,21 @@ unavailable selected provider returns `503`, and provider execution or output
 failures return a redacted `502`. CLI execution has a 120-second timeout and one
 safe retry for transient failures. The older `/api/analyse` extraction-only
 route remains available for adapter diagnostics.
+
+The result's contradiction and movement fields are:
+
+```text
+activeConstraints[]                  one current value per populated dimension
+input.taskBoundaries[]                source-grounded whole-task replacements
+reframes[]                           exact old/replacement constraints and source IDs
+latestReframe?                       only set when the newest message caused one
+ranking[].previous                   prior axis scores, total, confidence, and rank
+ranking[].deltas                     signed axis/total/confidence/rank changes
+ranking[].change                     causal message plus changed/unchanged evidence
+ranking[].explanation                explanation for that candidate's complete rank
+rankingChange                        previous/current winners and movement explanation
+mostInfluentialAxis                  dominant normalised weight and policy rationale
+```
 
 The app never reads or exposes saved CLI credentials. Provider discovery checks
 executable versions only, and analysis failures do not reflect raw CLI stderr to
@@ -260,7 +324,8 @@ src/
 │   ├── layout.tsx                 # Static document shell and font variables
 │   └── page.tsx                   # Workbench entry point
 ├── components/
-│   ├── intent-ranker.tsx          # Interactive three-column UI
+│   ├── intent-ranker.tsx          # Workbench composition boundary
+│   ├── intent-ranker/             # Workflow hook, panels, dialogs, and display helpers
 │   ├── intent-ranker.test.tsx     # Browser-like interaction regressions
 │   └── ui/                        # Requested shadcn preset components
 └── lib/
@@ -273,7 +338,10 @@ src/
     │   ├── normalize.ts           # Grounding, keys, features, deduplication
     │   └── types.ts               # Provider-neutral contract
     └── ranking/
-        ├── engine.ts              # Scoring, ranking, confidence, abstention
+        ├── engine.ts              # Ranking orchestration and cross-run comparison
+        ├── constraints.ts         # Ordered constraints and task-switch handling
+        ├── scoring.ts             # Snapshot signal and confidence scoring
+        ├── explanations.ts        # Candidate and winner-change explanations
         ├── engine.test.ts         # Behavioural tests
         ├── scenarios.ts           # Inspectable demo fixtures and rules
         └── types.ts               # Domain model
@@ -310,7 +378,7 @@ The local Next.js server can safely invoke installed CLI adapters while retainin
 - Replace lexical demo similarity with a local embedding model while retaining message-level evidence.
 - Persist per-user task history in SQLite with accepted/corrected outcomes.
 - Add a human-feedback action that records the accepted interpretation for future history scoring.
-- Add adversarial tests for negation, quoted instructions, topic switches, and multiple simultaneous tasks.
+- Extend the labelled evaluation set with multiple simultaneous-task cases.
 - Package the local-first app with Tauri only if native background monitoring becomes a real requirement.
 
 ## Known limitations

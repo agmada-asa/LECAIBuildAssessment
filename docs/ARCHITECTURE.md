@@ -43,7 +43,14 @@ explained accurately. Source message IDs are never replaced or sorted.
 The unified API returns the normalized ranking input with the initial result.
 The browser can therefore apply weight changes deterministically without another
 provider call, while follow-up messages still rerun candidate extraction because
-they may introduce a genuinely new interpretation.
+they may introduce a genuinely new interpretation. A follow-up also sends the
+preceding normalized input back through the validated API boundary. Previous
+scores and winners are therefore recomputed from the catalogue the user actually
+saw, while new or removed candidates are described without fabricated deltas.
+
+Provider requests are abortable and sequence-tagged in the browser workflow.
+Changing or resetting the visible conversation invalidates pending work, so a
+late provider response cannot install candidates from an obsolete log.
 
 This makes the demo reproducible and prevents provider session memory from becoming an undocumented fourth signal.
 
@@ -80,7 +87,34 @@ Each extracted constraint contains:
 
 Candidates expose canonical features such as `format:slides` and `granularity:raw`. Exact required features score `1`; direct conflicts score near `0`; unspecified features remain neutral rather than being treated as false.
 
-When a later message flips the same dimension/value pair, the old constraint is marked superseded. This preserves auditability while giving the latest explicit instruction precedence.
+The engine selects one canonical active value for every populated dimension. A
+later required value supersedes an earlier value in the same dimension, while a
+later prohibition supersedes a requirement for the prohibited value. This
+handles both polarity reversals (`slides` → `no slides`) and value changes
+(`slides` → `CSV`). Same-value restatements update provenance without being
+reported as a reframe.
+
+Whole-task changes are provider-grounded rather than encoded as a catalogue of
+known topics. `ProviderAnalysis.taskBoundaries` names the exact source message
+where an unrelated replacement begins and explains the semantic change. The
+ranker then supersedes every earlier active dimension before applying the new
+message's provider-defined constraints. For a cue-free switch, normalization
+requires a grounded required `topic` or `task` constraint in the replacement
+message; explicit reset wording remains sufficient on its own.
+Semantic and historical scores are calculated from the active task's messages
+only, while the full conversation remains available for the constraint audit
+trail. Providers are instructed to emit a canonical `topic` or `task` dimension,
+but the ranker does not know or enumerate possible values. A small
+transition-phrase detector remains only as an offline fallback when semantic
+provider metadata is absent.
+
+Matching is boundary-aware and polarity-aware: an explicit negative does not
+also trigger its positive substring rule. Text inside quotation marks and
+phrases introduced as earlier/reported instructions are excluded from new
+constraint extraction. The same safeguards apply to deterministic whole-task
+reset cues, so quoted or negated text such as `do not ignore the previous task`
+cannot clear active state. Each reframe retains exact old and replacement
+constraint objects, matched source text, and source-message IDs.
 
 ## Historical score
 
@@ -106,6 +140,7 @@ Weight changes affect ranking influence, not the underlying evidence. Conflict b
 - Semantic terms for each interpretation.
 - Canonical candidate features.
 - Extracted constraints grounded in conversation phrases.
+- Source-grounded semantic task boundaries for unrelated topic replacements.
 
 Providers do not choose the winner. This prevents Codex, Ollama, or another
 future adapter from silently replacing the application's scoring policy.
@@ -115,6 +150,11 @@ titles, feature tags must use `dimension:value`, constraints must match a source
 message and a candidate feature dimension, substantially overlapping candidates
 are merged, and fewer than three distinct results are rejected. Message order and
 source IDs carry provenance; the pipeline does not require speaker roles.
+Constraint display labels must retain meaningful language from their grounded
+source phrases; claims inferred only from omission are discarded. Cue-free task
+boundaries must introduce a required `topic` or `task` constraint in the same
+message. Format-, audience-, tone-, and detail-only follow-ups therefore inherit
+the established subject instead of clearing the earlier context.
 
 The Codex adapter uses `spawn` with an argument array and stdin. It never builds
 a shell command from user content. Live extraction runs from the temporary
@@ -135,15 +175,27 @@ The decision brief is a template over:
 - Current and previous winners.
 - Active policy weights.
 - Strongest computed signal.
-- Recorded reframe events.
+- A reframe caused by the newest message, when present.
 - Uncertainty reason.
+
+Every candidate also retains its complete previous snapshot and signed semantic,
+constraint, history, total, confidence, and rank deltas. Material axis changes
+are attributed to the newest source message. Evidence is partitioned into
+added, removed, and unchanged sets, and every candidate receives its own rank
+explanation with available supporting and conflicting evidence. Result-level
+`rankingChange` text explains both sides of a winner change or neutrally records
+that the same winner remained first, while
+`mostInfluentialAxis` records the dominant normalised policy weight and why the
+policy prioritises it.
 
 It does not reveal or request hidden model reasoning. Reviewers can trace every sentence to stored values in the output model.
 
 ## Testing strategy
 
 Domain tests cover invariant behaviours rather than exact floating-point
-snapshots, including cue-free reframes and invalid weight policies. Provider
+snapshots, including value changes, polarity reversals, paraphrases, quoted and
+reported text, cue-free unrelated topic switches, complete task switches, stale reframe prevention, full score
+deltas, cue-free reframes, and invalid weight policies. Provider
 tests cover subprocess isolation, normalization, retries, and structured errors.
 Parser tests cover valid, incomplete, and malformed JSON, CSV, and TXT. JSDOM
 component tests cover the initial candidate list, import preview, accessible
