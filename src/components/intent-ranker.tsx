@@ -2,48 +2,50 @@
 
 /** @file Composes the intent-ranking workbench from focused workflow and panel modules. */
 
+import { useState } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { AiBrain03Icon, Alert02Icon } from "@hugeicons/core-free-icons";
+import { Alert02Icon } from "@hugeicons/core-free-icons";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ConversationPanel } from "./intent-ranker/conversation-panel";
 import { EvidencePanel } from "./intent-ranker/evidence-panel";
 import { ConversationImportDialog } from "./intent-ranker/import-dialog";
 import { RankingPanel } from "./intent-ranker/ranking-panel";
-import { QueueDialog } from "./intent-ranker/queue-dialog";
+import { TaskSidebar } from "./intent-ranker/task-sidebar";
 import { ProviderSettings, WeightSettings } from "./intent-ranker/settings-dialogs";
 import { useIntentRanker } from "./intent-ranker/use-intent-ranker";
 
 /** Main arbitrary-conversation analysis workbench. */
 export function IntentRanker() {
   const workbench = useIntentRanker();
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [editedTitle, setEditedTitle] = useState("");
+
+  /** Commits the inline edited conversation title. */
+  function saveTitle() {
+    if (editedTitle.trim()) {
+      workbench.handleRenameConversation(editedTitle.trim());
+    }
+    setIsEditingTitle(false);
+  }
 
   return (
     <TooltipProvider>
       <div className="min-h-screen bg-muted/25">
         <header className="sticky top-0 z-40 border-b bg-background/92 backdrop-blur-xl">
           <div className="mx-auto flex h-16 max-w-[1720px] items-center gap-4 px-4 sm:px-6">
-            <div className="hidden min-w-0 items-center gap-3 sm:flex">
-              <div className="relative flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-foreground text-background shadow-sm">
-                <HugeiconsIcon icon={AiBrain03Icon} className="size-[18px]" strokeWidth={2} />
-                <span className="absolute right-1 bottom-1 size-1.5 rounded-full bg-primary ring-2 ring-foreground" />
-              </div>
-              <div className="hidden sm:block">
-                <p className="font-heading text-sm font-semibold tracking-tight">Resolve</p>
-              </div>
+            <div className="hidden min-w-0 items-center sm:flex">
+              <p className="font-heading text-lg font-bold tracking-tight text-foreground">Resolve</p>
             </div>
 
-            <Separator orientation="vertical" className="mx-1 hidden h-6 sm:block" />
-
-            <p className="min-w-0 flex-1 truncate text-sm font-medium">
+            <p className="min-w-0 flex-1 truncate text-sm text-muted-foreground sm:text-foreground font-medium">
               {workbench.importedLog?.conversationId ?? "Conversation ranking"}
             </p>
 
             <div className="ml-auto flex items-center gap-2">
-              <QueueDialog />
               <ConversationImportDialog
                 providers={workbench.providers}
                 provider={workbench.selectedProvider}
@@ -67,47 +69,18 @@ export function IntentRanker() {
           </div>
         </header>
 
-        <main
-          aria-busy={workbench.isImporting}
-          className="workspace-grid min-h-[calc(100vh-64px)]"
-        >
+        <div className="flex min-h-[calc(100vh-64px)]">
+          <TaskSidebar
+            activeConversationId={workbench.importedLog?.conversationId}
+            renamedConversation={workbench.conversationRename}
+            refreshKey={`${workbench.importedLog?.conversationId ?? "empty"}:${workbench.persistence?.state ?? "none"}:${workbench.queueRefreshRevision}`}
+            onSelectConversation={workbench.handleSelectConversation}
+          />
+          <main
+            aria-busy={workbench.isImporting}
+            className="workspace-grid min-w-0 flex-1 pl-14 lg:pl-0"
+          >
           <div className="mx-auto max-w-[1720px] px-4 py-5 sm:px-6">
-            {!workbench.importedLog && !workbench.isImporting ? (
-              <section className="mx-auto flex min-h-[calc(100vh-140px)] max-w-2xl flex-col items-center justify-center text-center">
-                <div className="flex size-12 items-center justify-center rounded-2xl bg-foreground text-background">
-                  <HugeiconsIcon icon={AiBrain03Icon} className="size-6" strokeWidth={2} />
-                </div>
-                <h1 className="mt-5 font-heading text-2xl font-semibold tracking-tight sm:text-3xl">
-                  Rank an ambiguous conversation
-                </h1>
-                <p className="mt-3 max-w-lg text-sm leading-6 text-muted-foreground">
-                  Import JSON, CSV, or TXT to compare grounded interpretations and route uncertain work for review.
-                </p>
-                <p className="mt-4 text-sm font-medium">Choose “Analyze a log” to begin.</p>
-              </section>
-            ) : <>
-            <div className="mb-5">
-              <h1 className="font-heading text-xl font-semibold tracking-tight sm:text-2xl">
-                {workbench.importedLog?.conversationId ?? "Analyzing conversation"}
-              </h1>
-              <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">
-                {workbench.importedLog
-                  ? `${workbench.importedLog.messages.length} messages supplied for ${workbench.importedLog.userId}.`
-                  : "The imported log is being analyzed."}
-              </p>
-              {workbench.analysisSource && <Badge variant="outline" className="mt-2 rounded-full text-xs">
-                Analyzed by {workbench.analysisSource.name}
-              </Badge>}
-              {workbench.persistence?.state && (
-                <Badge variant="outline" className="mt-2 ml-2 rounded-full text-xs">
-                  State: {workbench.persistence.state.replace("_", " ")}
-                </Badge>
-              )}
-              <Badge variant="outline" className="mt-2 ml-2 rounded-full text-xs">
-                {workbench.result.semanticModel.name}@{workbench.result.semanticModel.revision}
-              </Badge>
-            </div>
-
             {workbench.analysisError && (
               <Alert role="alert" className="mb-4 border-rose-200 bg-rose-50 text-rose-950">
                 <HugeiconsIcon icon={Alert02Icon} className="size-4" strokeWidth={2} />
@@ -117,8 +90,25 @@ export function IntentRanker() {
                 </AlertDescription>
               </Alert>
             )}
+            {workbench.renameError && (
+              <Alert role="alert" className="mb-4 border-rose-200 bg-rose-50 text-rose-950">
+                <HugeiconsIcon icon={Alert02Icon} className="size-4" strokeWidth={2} />
+                <AlertTitle>Conversation name was not saved</AlertTitle>
+                <AlertDescription>{workbench.renameError}</AlertDescription>
+              </Alert>
+            )}
 
-            {workbench.isImporting ? (
+            {!workbench.importedLog && !workbench.isImporting ? (
+              <section className="mx-auto flex min-h-[calc(100vh-140px)] max-w-2xl flex-col items-center justify-center text-center">
+                <h1 className="font-heading text-2xl font-semibold tracking-tight sm:text-3xl">
+                  Rank an ambiguous conversation
+                </h1>
+                <p className="mt-3 max-w-lg text-sm leading-6 text-muted-foreground">
+                  Import JSON, CSV, or TXT to compare grounded interpretations and route uncertain work for review.
+                </p>
+                <p className="mt-4 text-sm font-medium">Choose “Analyze a log” to begin.</p>
+              </section>
+            ) : workbench.isImporting ? (
               <section
                 role="status"
                 aria-label="Analysis in progress"
@@ -137,39 +127,122 @@ export function IntentRanker() {
                 </div>
               </section>
             ) : (
-            <div className="grid items-start gap-5 xl:grid-cols-[330px_minmax(460px,1fr)_320px] 2xl:grid-cols-[360px_minmax(560px,1fr)_350px]">
-              <ConversationPanel
-                messages={workbench.messages}
-                totalFixtureMessages={workbench.messages.length}
-                userName={workbench.importedLog?.userId ?? "Unknown user"}
-                userRole={workbench.importedLog?.domain?.name ?? "Domain not supplied"}
-                isProcessing={workbench.isProcessing}
-                customMessage={workbench.customMessage}
-                onCustomMessageChange={workbench.setCustomMessage}
-                onAddCustomMessage={workbench.handleAddCustomMessage}
-                onProcessNext={() => undefined}
-                onReset={workbench.handleReset}
-              />
-              <RankingPanel
-                result={workbench.result}
-                selectedId={workbench.selected.id}
-                onSelect={workbench.setSelectedId}
-              />
-              <EvidencePanel
-                result={workbench.result}
-                selected={workbench.selected}
-                canSaveOutcome={!workbench.resultStale && Boolean(
-                  workbench.persistence?.identified &&
-                    workbench.persistence.rankingRunId,
-                )}
-                outcomeStatus={workbench.outcomeStatus}
-                onOutcome={workbench.handleOutcome}
-              />
-            </div>
+              <>
+                <div className="mb-5">
+                  {isEditingTitle ? (
+                    <form
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        saveTitle();
+                      }}
+                      className="flex items-center gap-2 max-w-md"
+                    >
+                      <Input
+                        aria-label="Edit conversation name"
+                        value={editedTitle}
+                        onChange={(event) => setEditedTitle(event.target.value)}
+                        placeholder="Conversation name"
+                        className="h-8 rounded-xl text-sm font-medium"
+                        autoFocus
+                      />
+                      <Button size="xs" type="submit" aria-label="Save name">
+                        Save
+                      </Button>
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        type="button"
+                        onClick={() => setIsEditingTitle(false)}
+                      >
+                        Cancel
+                      </Button>
+                    </form>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <h1 className="font-heading text-xl font-semibold tracking-tight sm:text-2xl">
+                        {workbench.importedLog?.conversationId ?? "Analyzing conversation"}
+                      </h1>
+                      {workbench.importedLog && (
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          aria-label="Rename conversation"
+                          onClick={() => {
+                            setEditedTitle(workbench.importedLog?.conversationId ?? "");
+                            setIsEditingTitle(true);
+                          }}
+                          className="rounded-full text-xs text-muted-foreground hover:text-foreground"
+                        >
+                          Rename
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                  <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">
+                    {workbench.importedLog
+                      ? `${workbench.importedLog.messages.length} messages supplied for ${workbench.importedLog.userId}.`
+                      : "The imported log is being analyzed."}
+                  </p>
+                </div>
+
+                <div className="grid items-start gap-5 xl:grid-cols-[330px_minmax(460px,1fr)_320px] 2xl:grid-cols-[360px_minmax(560px,1fr)_350px]">
+                  <ConversationPanel
+                    messages={workbench.messages}
+                    totalFixtureMessages={workbench.messages.length}
+                    userName={workbench.importedLog?.userId ?? "Unknown user"}
+                    userRole={workbench.importedLog?.domain?.name ?? "Domain not supplied"}
+                    isProcessing={workbench.isProcessing}
+                    customMessage={workbench.customMessage}
+                    onCustomMessageChange={workbench.setCustomMessage}
+                    onAddCustomMessage={workbench.handleAddCustomMessage}
+                    onProcessNext={() => undefined}
+                    onReset={workbench.handleReset}
+                  />
+                  <RankingPanel
+                    result={workbench.result}
+                    selectedId={workbench.selected.id}
+                    acceptedInterpretationId={workbench.acceptedInterpretationId}
+                    onSelect={workbench.setSelectedId}
+                  />
+                  <EvidencePanel
+                    result={workbench.result}
+                    selected={workbench.selected}
+                    canSaveOutcome={
+                      !workbench.resultStale &&
+                      Boolean(
+                        workbench.persistence?.identified &&
+                          workbench.persistence.rankingRunId,
+                      )
+                    }
+                    outcomeStatus={workbench.outcomeStatus}
+                    acceptedInterpretationId={workbench.acceptedInterpretationId}
+                    isSavingOutcome={workbench.isSavingOutcome}
+                    onOutcome={workbench.handleOutcome}
+                  />
+                </div>
+
+                <footer className="mt-8 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border/40 pt-4 text-xs text-muted-foreground">
+                  {workbench.analysisSource && (
+                    <>
+                      <span>Analyzed by {workbench.analysisSource.name}</span>
+                      <span aria-hidden="true">•</span>
+                    </>
+                  )}
+                  {workbench.persistence?.state && (
+                    <>
+                      <span>State: {workbench.persistence.state.replace("_", " ")}</span>
+                      <span aria-hidden="true">•</span>
+                    </>
+                  )}
+                  <span>
+                    {workbench.result.semanticModel.name}@{workbench.result.semanticModel.revision}
+                  </span>
+                </footer>
+              </>
             )}
-            </>}
           </div>
-        </main>
+          </main>
+        </div>
       </div>
     </TooltipProvider>
   );

@@ -2,7 +2,7 @@
 
 import type { ConversationLog } from "@/lib/conversations/schema";
 import type { ProviderId } from "@/lib/providers/types";
-import type { RankErrorResponse, RankSuccessResponse } from "@/lib/ranking/api";
+import type { RankSuccessResponse } from "@/lib/ranking/api";
 import type {
   ConversationMessage,
   RankingInput,
@@ -11,6 +11,7 @@ import type {
   SignalWeights,
 } from "@/lib/ranking/types";
 import { DEVICE_ID_HEADER, getOrCreateDeviceId } from "@/lib/persistence/device";
+import type { QueuedTaskReference } from "@/lib/persistence/types";
 
 export const SIGNAL_META: Record<
   SignalKey,
@@ -93,6 +94,7 @@ export async function requestRanking(
   weights: SignalWeights,
   previousInput?: RankingInput,
   signal?: AbortSignal,
+  queuedTask?: QueuedTaskReference,
 ): Promise<RankSuccessResponse> {
   const response = await fetch("/api/rank", {
     method: "POST",
@@ -100,14 +102,28 @@ export async function requestRanking(
       "content-type": "application/json",
       [DEVICE_ID_HEADER]: getOrCreateDeviceId(),
     },
-    body: JSON.stringify({ provider, conversation, weights, previousInput }),
+    body: JSON.stringify({ provider, conversation, weights, previousInput, queuedTask }),
     signal,
   });
-  const body = (await response.json()) as RankSuccessResponse | RankErrorResponse;
-  if (!response.ok || "error" in body) {
-    throw new Error(
-      "error" in body ? body.error.message : "The ranking service returned an invalid response.",
-    );
+  const rawBody = (await response.json()) as unknown;
+  if (
+    !response.ok ||
+    (typeof rawBody === "object" &&
+      rawBody !== null &&
+      "error" in rawBody &&
+      Boolean((rawBody as { error: unknown }).error))
+  ) {
+    const errorPayload = (rawBody as { error?: unknown })?.error;
+    const message =
+      typeof errorPayload === "string"
+        ? errorPayload
+        : typeof errorPayload === "object" &&
+            errorPayload !== null &&
+            "message" in errorPayload &&
+            typeof (errorPayload as { message: unknown }).message === "string"
+          ? (errorPayload as { message: string }).message
+          : "The ranking service returned an invalid response.";
+    throw new Error(message);
   }
-  return body;
+  return rawBody as RankSuccessResponse;
 }

@@ -14,13 +14,8 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
   ConversationImportError,
@@ -46,6 +41,7 @@ export function ConversationImportDialog({
   const [open, setOpen] = useState(false);
   const [source, setSource] = useState("");
   const [filename, setFilename] = useState<string>();
+  const [customName, setCustomName] = useState("");
   const [preview, setPreview] = useState<ConversationLog>();
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -53,10 +49,18 @@ export function ConversationImportDialog({
   const providerReady = Boolean(selectedProvider?.operational);
 
   /** Validates current text without starting analysis. */
-  function createPreview(nextSource = source, nextFilename = filename) {
+  function createPreview(
+    nextSource = source,
+    nextFilename = filename,
+    nextName = customName,
+  ) {
     try {
-      const log = parseConversationInput(nextSource, { filename: nextFilename });
+      const log = parseConversationInput(nextSource, {
+        filename: nextFilename,
+        conversationId: nextName.trim() || undefined,
+      });
       setPreview(log);
+      setCustomName(nextName.trim() || log.conversationId);
       setError("");
     } catch (caught) {
       setPreview(undefined);
@@ -87,18 +91,26 @@ export function ConversationImportDialog({
     if (file) void loadFile(file);
   }
 
-  /** Closes the preview immediately, then lets the workbench present request progress. */
+  /** Closes the preview immediately, resets dialog inputs, and dispatches analysis. */
   async function submit() {
     if (!preview || submitting) return;
+    const finalConversationId = customName.trim() || preview.conversationId;
+    const logToAnalyze: ConversationLog = {
+      ...preview,
+      conversationId: finalConversationId,
+    };
     setSubmitting(true);
     setOpen(false);
+    setSource("");
+    setFilename(undefined);
+    setCustomName("");
+    setPreview(undefined);
+    setError("");
+    setSubmitting(false);
     try {
-      await onAnalyze(preview, provider);
-      setError("");
+      await onAnalyze(logToAnalyze, provider);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Analysis failed.");
-    } finally {
-      setSubmitting(false);
     }
   }
 
@@ -159,21 +171,26 @@ export function ConversationImportDialog({
             onDrop={handleDrop}
             className="rounded-xl border border-dashed bg-muted/25 p-4 text-center"
           >
-            <label htmlFor="conversation-file" className="cursor-pointer text-xs font-semibold">
+            <label htmlFor="conversation-file" className="cursor-pointer block text-xs font-semibold">
               Choose a conversation file
+              <input
+                id="conversation-file"
+                aria-label="Choose conversation file"
+                type="file"
+                accept=".json,.csv,.txt,application/json,text/csv,text/plain"
+                className="sr-only"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) void loadFile(file);
+                }}
+              />
             </label>
-            <input
-              id="conversation-file"
-              aria-label="Choose conversation file"
-              type="file"
-              accept=".json,.csv,.txt,application/json,text/csv,text/plain"
-              className="mt-2 block w-full text-xs text-muted-foreground"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) void loadFile(file);
-              }}
-            />
-            <p className="mt-2 text-[10px] text-muted-foreground">or drag and drop it here</p>
+            <p className="mt-1 text-[10px] text-muted-foreground">or drag and drop it here</p>
+            {filename && (
+              <p className="mt-2 text-xs font-medium text-primary">
+                Selected: {filename}
+              </p>
+            )}
           </div>
 
           <div>
@@ -187,10 +204,11 @@ export function ConversationImportDialog({
               onChange={(event) => {
                 setSource(event.target.value);
                 setFilename(undefined);
+                setCustomName("");
                 setPreview(undefined);
                 setError("");
               }}
-              placeholder="request-17: Prepare the June report.\nfollow-up: Send the raw rows."
+              placeholder={"request-17: Prepare the June report.\nfollow-up: Send the raw rows."}
               className="min-h-28 resize-y rounded-xl font-mono text-xs"
             />
           </div>
@@ -221,6 +239,30 @@ export function ConversationImportDialog({
                 <span className="text-[10px] text-muted-foreground">
                   {preview.messages.length} messages
                 </span>
+              </div>
+              <div className="mb-3">
+                <label htmlFor="conversation-name-input" className="mb-1 block text-xs font-semibold">
+                  Conversation name
+                </label>
+                <Input
+                  id="conversation-name-input"
+                  aria-label="Conversation name"
+                  value={customName}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    setCustomName(next);
+                    setPreview((current) =>
+                      current
+                        ? {
+                            ...current,
+                            conversationId: next.trim() || current.conversationId,
+                          }
+                        : current,
+                    );
+                  }}
+                  placeholder="Conversation title or ID"
+                  className="rounded-xl text-xs"
+                />
               </div>
               <div className="max-h-48 space-y-2 overflow-y-auto">
                 {preview.messages.map((message) => (

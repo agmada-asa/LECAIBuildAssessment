@@ -12,6 +12,7 @@ import type { ProviderId, ProviderStatus } from "@/lib/providers/types";
 import type { RankSuccessResponse } from "@/lib/ranking/api";
 import type { RankingResult } from "@/lib/ranking/types";
 import { DEVICE_ID_HEADER, getOrCreateDeviceId } from "@/lib/persistence/device";
+import type { QueuedRankingTask, QueuedTaskReference } from "@/lib/persistence/types";
 import { rankConversation, reweightRankingResult } from "@/lib/ranking/engine";
 import {
   DEFAULT_WEIGHTS,
@@ -34,6 +35,11 @@ import {
 type ActiveRequest = {
   id: number;
   controller: AbortController;
+};
+
+type ConversationRename = {
+  currentConversationId: string;
+  nextConversationId: string;
 };
 
 /** Restores the truthful provider label persisted with a completed ranking run. */
@@ -72,7 +78,12 @@ export function useIntentRanker() {
   const [analysisSource, setAnalysisSource] =
     useState<RankSuccessResponse["provider"]>();
   const [analysisError, setAnalysisError] = useState("");
+  const [renameError, setRenameError] = useState("");
+  const [conversationRename, setConversationRename] = useState<ConversationRename>();
+  const [queueRefreshRevision, setQueueRefreshRevision] = useState(0);
   const [outcomeStatus, setOutcomeStatus] = useState("");
+  const [acceptedInterpretationId, setAcceptedInterpretationId] = useState("");
+  const [isSavingOutcome, setIsSavingOutcome] = useState(false);
   const [providers, setProviders] = useState<ProviderStatus[]>([]);
   const requestSequence = useRef(0);
   const activeRequest = useRef<ActiveRequest | undefined>(undefined);
@@ -186,7 +197,7 @@ export function useIntentRanker() {
   async function enqueueConversation(
     conversation: ConversationLog,
     provider: ProviderId,
-  ) {
+  ): Promise<QueuedTaskReference | undefined> {
     try {
       const response = await fetch("/api/queue", {
         method: "POST",
@@ -196,24 +207,14 @@ export function useIntentRanker() {
         },
         body: JSON.stringify({ provider, conversation, weights }),
       });
-      return response.ok;
+      if (!response.ok) return undefined;
+      const body = (await response.json()) as { task?: QueuedRankingTask };
+      return body.task
+        ? { id: body.task.id, revision: body.task.revision }
+        : undefined;
     } catch {
-      return false;
+      return undefined;
     }
-  }
-
-  /** Gives the bounded worker a chance to complete newly queued revisions. */
-  function processQueuedConversation() {
-    void fetch("/api/queue/process", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        [DEVICE_ID_HEADER]: getOrCreateDeviceId(),
-      },
-      body: JSON.stringify({ limit: 1 }),
-    }).catch(() => {
-      // The durable pending task remains available for a later worker pass.
-    });
   }
 
   /** Resets transient state when the walkthrough moves to another fixture. */
@@ -231,7 +232,11 @@ export function useIntentRanker() {
     setPersistence(undefined);
     setAnalysisSource(undefined);
     setAnalysisError("");
+    setRenameError("");
+    setConversationRename(undefined);
     setOutcomeStatus("");
+    setAcceptedInterpretationId("");
+    setIsSavingOutcome(false);
     setResultStale(false);
   }
 
@@ -246,6 +251,10 @@ export function useIntentRanker() {
     setRemoteResult(undefined);
     setAnalysisSource(undefined);
     setAnalysisError("");
+    setRenameError("");
+    setConversationRename(undefined);
+    setOutcomeStatus("");
+    setAcceptedInterpretationId("");
     setResultStale(false);
     requestRanking(
         scenarioConversationLog(scenario, nextMessages),
@@ -282,14 +291,16 @@ export function useIntentRanker() {
     setAnalysisError("");
     setResultStale(false);
     setOutcomeStatus("");
+    setAcceptedInterpretationId("");
     try {
-      const queued = await enqueueConversation(log, selectedProvider);
+      const queuedTask = await enqueueConversation(log, selectedProvider);
       const response = await requestRanking(
         log,
         selectedProvider,
         weights,
         comparisonInput,
         request.controller.signal,
+        queuedTask,
       );
       if (!isCurrentRequest(request)) return;
       setRemoteInput(response.input);
@@ -297,7 +308,6 @@ export function useIntentRanker() {
       setRemoteResult(response.result);
       setPersistence(response.persistence);
       setAnalysisSource(response.provider);
-      if (queued) processQueuedConversation();
     } catch (caught) {
       if (!isCurrentRequest(request)) return;
       if (previousImportedLog) setImportedLog(previousImportedLog);
@@ -324,6 +334,11 @@ export function useIntentRanker() {
     setPersistence(undefined);
     setAnalysisSource(undefined);
     setAnalysisError("");
+    setRenameError("");
+    setConversationRename(undefined);
+    setOutcomeStatus("");
+    setAcceptedInterpretationId("");
+    setIsSavingOutcome(false);
     setResultStale(false);
     fetch("/api/state", {
       method: "DELETE",
@@ -372,14 +387,17 @@ export function useIntentRanker() {
     const request = beginProviderRequest();
     setIsImporting(true);
     setAnalysisError("");
+    setOutcomeStatus("");
+    setAcceptedInterpretationId("");
     try {
-      const queued = await enqueueConversation(log, provider);
+      const queuedTask = await enqueueConversation(log, provider);
       const response = await requestRanking(
         log,
         provider,
         weights,
         undefined,
         request.controller.signal,
+        queuedTask,
       );
       if (!isCurrentRequest(request)) return;
       setImportedLog(log);
@@ -390,7 +408,7 @@ export function useIntentRanker() {
       setPersistence(response.persistence);
       setAnalysisSource(response.provider);
       setSelectedId("");
-      if (queued) processQueuedConversation();
+      setConversationRename(undefined);
     } catch (caught) {
       if (!isCurrentRequest(request)) return;
       setAnalysisError(caught instanceof Error ? caught.message : "Analysis failed.");
@@ -411,6 +429,8 @@ export function useIntentRanker() {
       setOutcomeStatus("Describe the actual intended task before saving a correction.");
       return;
     }
+    const interpretation = selected;
+    setIsSavingOutcome(true);
     setOutcomeStatus("Saving outcome…");
     try {
       const response = await fetch("/api/outcomes", {
@@ -423,22 +443,99 @@ export function useIntentRanker() {
           decision,
           correction: correction?.trim(),
           interpretation: {
-            id: selected.id,
-            title: selected.title,
-            summary: selected.summary,
-            semanticTerms: selected.semanticTerms,
-            features: selected.features,
+            id: interpretation.id,
+            title: interpretation.title,
+            summary: interpretation.summary,
+            semanticTerms: interpretation.semanticTerms,
+            features: interpretation.features,
           },
         }),
       });
       const body = (await response.json()) as { error?: string };
       if (!response.ok) throw new Error(body.error ?? "The outcome could not be saved.");
-      setOutcomeStatus(
-        decision === "accepted" ? "Interpretation accepted." : "Correction saved.",
-      );
+      if (decision === "accepted") {
+        setAcceptedInterpretationId(interpretation.id);
+        setOutcomeStatus("");
+      } else {
+        setAcceptedInterpretationId("");
+        setOutcomeStatus("Correction saved.");
+      }
+      setPersistence((current) => current ? { ...current, state: "decided" } : current);
+      setQueueRefreshRevision((revision) => revision + 1);
     } catch (caught) {
       setOutcomeStatus(caught instanceof Error ? caught.message : "The outcome could not be saved.");
+    } finally {
+      setIsSavingOutcome(false);
     }
+  }
+
+  /** Optimistically renames the active conversation, then persists every stored snapshot. */
+  function handleRenameConversation(name: string) {
+    const trimmed = name.trim();
+    if (!trimmed || !importedLog || trimmed === importedLog.conversationId) return;
+    const previousLog = importedLog;
+    const rename = {
+      currentConversationId: previousLog.conversationId,
+      nextConversationId: trimmed,
+    };
+    setImportedLog({
+      ...previousLog,
+      conversationId: trimmed,
+    });
+    setConversationRename(rename);
+    setRenameError("");
+    void fetch("/api/queue", {
+      method: "PATCH",
+      headers: {
+        "content-type": "application/json",
+        [DEVICE_ID_HEADER]: getOrCreateDeviceId(),
+      },
+      body: JSON.stringify(rename),
+    })
+      .then(async (response) => {
+        const body = (await response.json()) as { error?: string };
+        if (!response.ok) throw new Error(body.error ?? "The conversation name could not be saved.");
+        setQueueRefreshRevision((revision) => revision + 1);
+      })
+      .catch((caught: unknown) => {
+        setImportedLog((current) =>
+          current?.conversationId === trimmed ? previousLog : current,
+        );
+        setConversationRename(undefined);
+        setRenameError(
+          caught instanceof Error ? caught.message : "The conversation name could not be saved.",
+        );
+      });
+  }
+
+  /** Restores one completed queue snapshot without rerunning its provider. */
+  function handleSelectConversation(task: QueuedRankingTask) {
+    if (!task.result) return;
+    invalidatePendingWork();
+    const restoredWeights = task.request.weights ?? DEFAULT_WEIGHTS;
+    setImportedLog(task.request.conversation);
+    setCustomMessages([]);
+    setCustomMessage("");
+    setWeights(restoredWeights);
+    setWeightPreset("custom");
+    setSelectedId("");
+    setRemoteInput(task.result.input);
+    setRemotePreviousInput(task.request.previousInput);
+    setRemoteResult(task.result.result);
+    setPersistence({ ...task.result.persistence, state: task.state });
+    setSelectedProvider(task.result.provider.id);
+    setAnalysisSource(task.result.provider);
+    setAnalysisError("");
+    setRenameError("");
+    setConversationRename((current) =>
+      current?.nextConversationId === task.request.conversation.conversationId
+        ? current
+        : undefined,
+    );
+    setOutcomeStatus("");
+    setAcceptedInterpretationId("");
+    setIsSavingOutcome(false);
+    setResultStale(false);
   }
 
   return {
@@ -457,9 +554,14 @@ export function useIntentRanker() {
     selectedProvider,
     analysisSource,
     analysisError,
+    renameError,
+    conversationRename,
+    queueRefreshRevision,
     providers,
     persistence,
     outcomeStatus,
+    acceptedInterpretationId,
+    isSavingOutcome,
     resultStale,
     setCustomMessage,
     setSelectedId,
@@ -473,5 +575,7 @@ export function useIntentRanker() {
     restoreWeights,
     handleImportedAnalysis,
     handleOutcome,
+    handleRenameConversation,
+    handleSelectConversation,
   };
 }

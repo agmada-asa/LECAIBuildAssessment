@@ -3,7 +3,7 @@
 import { useState } from "react";
 
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Alert02Icon, GitCompareIcon, SparklesIcon } from "@hugeicons/core-free-icons";
+import { Alert02Icon, GitCompareIcon } from "@hugeicons/core-free-icons";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -24,27 +24,27 @@ export function EvidencePanel({
   selected,
   canSaveOutcome,
   outcomeStatus,
+  acceptedInterpretationId,
+  isSavingOutcome = false,
   onOutcome,
 }: {
   result: RankingResult;
   selected: RankedInterpretation;
   canSaveOutcome: boolean;
   outcomeStatus: string;
+  acceptedInterpretationId?: string;
+  isSavingOutcome?: boolean;
   onOutcome: (decision: "accepted" | "corrected", correction?: string) => void;
 }) {
   const [isCorrecting, setIsCorrecting] = useState(false);
   const [correction, setCorrection] = useState("");
+  const selectedIsAccepted = selected.id === acceptedInterpretationId;
 
   return (
     <aside className="order-2 space-y-3 xl:order-3 xl:sticky xl:top-[88px] xl:self-start">
       <Card className="gap-0 overflow-hidden rounded-2xl py-0 shadow-sm">
         <CardHeader className="border-b bg-muted/25 px-4 py-4">
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="font-heading text-sm font-semibold">Why this ranking?</h2>
-            <div className="flex size-8 items-center justify-center rounded-lg bg-foreground text-background">
-              <HugeiconsIcon icon={SparklesIcon} className="size-4" strokeWidth={2} />
-            </div>
-          </div>
+          <h2 className="font-heading text-sm font-semibold">Why this ranking?</h2>
         </CardHeader>
         <CardContent className="space-y-4 px-4 py-4">
           <p className="text-[12px] leading-[1.65] text-foreground/85">{result.explanation}</p>
@@ -105,15 +105,39 @@ export function EvidencePanel({
 
           {canSaveOutcome && (
             <div>
+              {acceptedInterpretationId && (
+                <div
+                  role="status"
+                  className="mb-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-emerald-950"
+                >
+                  <p className="text-xs font-semibold">Interpretation accepted</p>
+                  <p className="mt-1 text-xs leading-5 text-emerald-900/80">
+                    Saved as evidence for future similar conversations from this user in this
+                    domain. It can strengthen matching interpretations in later rankings; it does
+                    not execute the task.
+                  </p>
+                </div>
+              )}
               <h3 className="text-xs font-semibold">Save this decision</h3>
               <div className="mt-2 grid grid-cols-1 gap-2">
-                <Button className="w-full" size="sm" onClick={() => onOutcome("accepted")}>
-                  Accept interpretation
+                <Button
+                  className="w-full"
+                  size="sm"
+                  aria-label={selectedIsAccepted ? "Interpretation accepted" : undefined}
+                  disabled={selectedIsAccepted || isSavingOutcome}
+                  onClick={() => onOutcome("accepted")}
+                >
+                  {selectedIsAccepted
+                    ? "Accepted"
+                    : isSavingOutcome
+                      ? "Saving decision…"
+                      : "Accept interpretation"}
                 </Button>
                 <Button
                   className="w-full"
                   size="sm"
                   variant="outline"
+                  disabled={isSavingOutcome}
                   onClick={() => setIsCorrecting(true)}
                 >
                   Correct interpretation
@@ -134,7 +158,7 @@ export function EvidencePanel({
                   <div className="flex gap-2">
                     <Button
                       size="sm"
-                      disabled={!correction.trim()}
+                      disabled={!correction.trim() || isSavingOutcome}
                       onClick={() => onOutcome("corrected", correction.trim())}
                     >
                       Save correction

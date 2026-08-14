@@ -24,10 +24,12 @@ function rankMovement(item: RankedInterpretation): number {
 function InterpretationCard({
   item,
   selected,
+  accepted,
   onSelect,
 }: {
   item: RankedInterpretation;
   selected: boolean;
+  accepted: boolean;
   onSelect: () => void;
 }) {
   const movement = rankMovement(item);
@@ -41,6 +43,7 @@ function InterpretationCard({
         "group w-full rounded-2xl border bg-card p-4 text-left shadow-xs transition-all duration-200",
         "hover:-translate-y-0.5 hover:border-foreground/20 hover:shadow-md",
         selected && "border-primary/60 ring-3 ring-primary/8",
+        accepted && "border-emerald-300 bg-emerald-50/45 ring-3 ring-emerald-500/10",
       )}
     >
       <div className="flex items-start gap-3.5">
@@ -58,7 +61,14 @@ function InterpretationCard({
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h3 className="font-heading text-sm font-semibold leading-5">{item.title}</h3>
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="font-heading text-sm font-semibold leading-5">{item.title}</h3>
+                {accepted && (
+                  <Badge className="border-emerald-200 bg-emerald-100 text-emerald-800">
+                    Accepted
+                  </Badge>
+                )}
+              </div>
               <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">
                 {item.summary}
               </p>
@@ -81,9 +91,6 @@ function InterpretationCard({
                   {pointDelta(item.deltas.confidence)}
                 </p>
               )}
-              <p className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
-                relative confidence
-              </p>
             </div>
           </div>
 
@@ -133,10 +140,12 @@ function InterpretationCard({
 export function RankingPanel({
   result,
   selectedId,
+  acceptedInterpretationId,
   onSelect,
 }: {
   result: RankingResult;
   selectedId: string;
+  acceptedInterpretationId?: string;
   onSelect: (id: string) => void;
 }) {
   const winner = result.ranking[0];
@@ -214,6 +223,7 @@ export function RankingPanel({
             key={item.id}
             item={item}
             selected={selectedId === item.id}
+            accepted={acceptedInterpretationId === item.id}
             onSelect={() => onSelect(item.id)}
           />
         ))}

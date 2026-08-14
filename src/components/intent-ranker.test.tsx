@@ -9,7 +9,7 @@
 
 import "@testing-library/jest-dom/vitest";
 
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -128,6 +128,48 @@ describe("IntentRanker", () => {
     );
   });
 
+  it("visibly confirms an accepted interpretation and explains its effect", async () => {
+    const scenario = getScenario("finance-reframe");
+    const conversation = {
+      conversationId: "acceptance-review",
+      userId: "finance-user",
+      domain: { name: "finance" },
+      messages: scenario.messages,
+      acceptedOutcomes: [],
+    };
+    const result = rankConversation(scenario, conversation.messages, DEFAULT_WEIGHTS);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/state") {
+        return new Response(JSON.stringify({
+          reference: { id: "run-1", state: "decided" },
+          run: { provider: "codex", conversation, input: scenario, result },
+        }));
+      }
+      if (String(input) === "/api/queue") {
+        return new Response(JSON.stringify({ tasks: [] }));
+      }
+      if (String(input) === "/api/outcomes") {
+        return new Response(JSON.stringify({ saved: true, decision: "accepted" }));
+      }
+      return new Response(JSON.stringify({ providers: operationalApiProviders }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<IntentRanker />);
+
+    const acceptedTitle = result.ranking[0].title;
+    expect(await screen.findByText(acceptedTitle)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Accept interpretation" }));
+
+    expect(await screen.findByText("Interpretation accepted")).toBeInTheDocument();
+    expect(screen.getByText(/saved as evidence for future similar conversations/i)).toBeInTheDocument();
+    expect(
+      within(screen.getByText(acceptedTitle).closest("button")!).getByText("Accepted"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Interpretation accepted" })).toBeDisabled();
+    expect(screen.getByText("State: decided")).toBeInTheDocument();
+  });
+
   it("restores the recorded provider and imported identity from durable state", async () => {
     const scenario = getScenario("finance-reframe");
     const conversation = {
@@ -166,7 +208,7 @@ describe("IntentRanker", () => {
     expect(screen.getByText("3 messages supplied for imported-finance-user.")).toBeInTheDocument();
   });
 
-  it("opens an inspectable queue view for multiple conversational tasks", async () => {
+  it("presents multiple conversational tasks in the collapsible sidebar", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -210,13 +252,72 @@ describe("IntentRanker", () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     render(<IntentRanker />);
 
-    await user.click(screen.getByRole("button", { name: "Task queue" }));
+    await user.click(screen.getByRole("button", { name: "Expand task sidebar" }));
 
-    expect(await screen.findByRole("heading", { name: "Task queue" })).toBeInTheDocument();
+    expect(await screen.findByRole("complementary", { name: "Tasks" })).toBeInTheDocument();
     expect(screen.getByText("finance-proposal")).toBeInTheDocument();
     expect(screen.getByText("apology-email")).toBeInTheDocument();
     expect(screen.getByText(/Write the rate-limiting proposal/)).toBeInTheDocument();
-    expect(screen.getByText("human review")).toBeInTheDocument();
+    expect(screen.getByText("Needs review")).toBeInTheDocument();
+    const taskRow = screen.getByText("finance-proposal").closest("article");
+    expect(taskRow).not.toHaveClass("rounded-xl");
+    expect(taskRow?.parentElement).toHaveClass("divide-y");
+
+    await user.click(screen.getByRole("button", { name: "Collapse task sidebar" }));
+    expect(screen.getByRole("button", { name: "Expand task sidebar" })).toBeInTheDocument();
+    expect(screen.queryByText("finance-proposal")).not.toBeInTheDocument();
+  });
+
+  it("polls active queue tasks until their completed result is available", async () => {
+    let queueReads = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input) === "/api/queue" && (!init?.method || init.method === "GET")) {
+          queueReads += 1;
+          const completed = queueReads > 1;
+          return new Response(JSON.stringify({
+            tasks: [{
+              id: "task-processing",
+              externalConversationId: "async-analysis",
+              revision: 1,
+              state: completed ? "decided" : "processing",
+              attempts: 1,
+              request: { conversation: { messages: [{}] } },
+              result: completed ? {
+                result: {
+                  ranking: [{ title: "Prepare the completed analysis", confidence: 0.8 }],
+                },
+              } : undefined,
+              createdAt: "2026-08-14T09:00:00.000Z",
+              updatedAt: completed
+                ? "2026-08-14T09:00:03.000Z"
+                : "2026-08-14T09:00:00.000Z",
+            }],
+          }));
+        }
+        if (String(input) === "/api/state") return new Response(null, { status: 204 });
+        return new Response(JSON.stringify({ providers: operationalApiProviders }));
+      }),
+    );
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<IntentRanker />);
+
+    await user.click(screen.getByRole("button", { name: "Expand task sidebar" }));
+    expect(await screen.findByText("Analyzing")).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+
+    expect(await screen.findByText("Complete")).toBeInTheDocument();
+    expect(screen.getByText("Prepare the completed analysis")).toBeInTheDocument();
+    expect(queueReads).toBe(2);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6_000);
+    });
+    expect(queueReads).toBe(2);
   });
 
   it("labels the weight preset control with a human-readable policy name", async () => {
@@ -459,5 +560,234 @@ describe("IntentRanker", () => {
       `weighted score ${adjustedCandidate.total.toFixed(3)}`,
     )).toBeInTheDocument();
     expect(fetchMock.mock.calls.filter(([url]) => String(url) === "/api/rank")).toHaveLength(1);
+  });
+
+  it("displays an error alert when analysis fails on initial import", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/providers") {
+        return new Response(JSON.stringify({ providers: operationalApiProviders }));
+      }
+      if (String(input) === "/api/queue") {
+        return new Response(JSON.stringify({ ok: true }));
+      }
+      if (String(input) === "/api/rank") {
+        return new Response(JSON.stringify({ error: "Provider returned 401 Unauthorized" }), {
+          status: 401,
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<IntentRanker />);
+
+    await user.click(screen.getByRole("button", { name: "Analyze a log" }));
+    await user.type(
+      screen.getByRole("textbox", { name: "Paste conversation log" }),
+      "test message for failure",
+    );
+    await user.click(screen.getByRole("button", { name: "Preview conversation" }));
+    await user.click(screen.getByRole("button", { name: "Analyze 1 messages" }));
+
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(screen.getByText(/Provider returned 401 Unauthorized/)).toBeInTheDocument();
+  });
+
+  it("allows analyzing a second conversation without the button being frozen", async () => {
+    const scenario = getScenario("finance-reframe");
+    const firstResult = rankConversation(scenario, scenario.messages.slice(0, 1), DEFAULT_WEIGHTS);
+    const secondResult = rankConversation(scenario, scenario.messages.slice(0, 2), DEFAULT_WEIGHTS);
+    let callCount = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/providers") {
+        return new Response(JSON.stringify({ providers: operationalApiProviders }));
+      }
+      if (String(input) === "/api/queue") {
+        return new Response(JSON.stringify({ ok: true }));
+      }
+      if (String(input) === "/api/rank") {
+        callCount++;
+        return new Response(
+          JSON.stringify({
+            provider: { id: "demo", name: "Deterministic fallback", fallback: true, notes: "ok" },
+            input: scenario,
+            result: callCount === 1 ? firstResult : secondResult,
+          }),
+        );
+      }
+      return new Response(null, { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<IntentRanker />);
+
+    // First analysis
+    await user.click(screen.getByRole("button", { name: "Analyze a log" }));
+    await user.type(
+      screen.getByRole("textbox", { name: "Paste conversation log" }),
+      "first conversation line",
+    );
+    await user.click(screen.getByRole("button", { name: "Preview conversation" }));
+    await user.click(screen.getByRole("button", { name: "Analyze 1 messages" }));
+
+    expect(await screen.findByText("Analyzed by Deterministic fallback")).toBeInTheDocument();
+
+    // Second analysis
+    await user.click(screen.getByRole("button", { name: "Analyze a log" }));
+    const pasteInput = screen.getByRole("textbox", { name: "Paste conversation log" });
+    await user.type(pasteInput, "second conversation line");
+    await user.click(screen.getByRole("button", { name: "Preview conversation" }));
+
+    const analyzeBtn = screen.getByRole("button", { name: "Analyze 1 messages" });
+    expect(analyzeBtn).not.toBeDisabled();
+    await user.click(analyzeBtn);
+
+    expect(callCount).toBe(2);
+  });
+
+  it("renders the file picker with hidden raw file input and multiline placeholder", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<IntentRanker />);
+
+    await user.click(screen.getByRole("button", { name: "Analyze a log" }));
+
+    const fileInput = document.querySelector("#conversation-file");
+    expect(fileInput).toHaveClass("sr-only");
+
+    const textarea = screen.getByRole("textbox", { name: "Paste conversation log" });
+    expect(textarea).toHaveAttribute(
+      "placeholder",
+      "request-17: Prepare the June report.\nfollow-up: Send the raw rows.",
+    );
+  });
+
+  it("allows renaming a conversation in the import dialog before analysis", async () => {
+    const scenario = getScenario("finance-reframe");
+    const fetchMock = vi.fn(
+      async (...args: [input: RequestInfo | URL, init?: RequestInit]) => {
+        const [input] = args;
+        if (String(input) === "/api/providers") {
+          return new Response(JSON.stringify({ providers: operationalApiProviders }));
+        }
+        if (String(input) === "/api/queue") {
+          return new Response(JSON.stringify({ ok: true }));
+        }
+        if (String(input) === "/api/rank") {
+          return new Response(
+            JSON.stringify({
+              provider: { id: "demo", name: "Deterministic fallback", fallback: true, notes: "ok" },
+              input: scenario,
+              result: rankConversation(scenario, scenario.messages.slice(0, 1), DEFAULT_WEIGHTS),
+            }),
+          );
+        }
+        return new Response(null, { status: 404 });
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<IntentRanker />);
+
+    await user.click(screen.getByRole("button", { name: "Analyze a log" }));
+    await user.type(
+      screen.getByRole("textbox", { name: "Paste conversation log" }),
+      "test line to rename",
+    );
+    await user.click(screen.getByRole("button", { name: "Preview conversation" }));
+
+    const nameInput = screen.getByRole("textbox", { name: "Conversation name" });
+    await user.clear(nameInput);
+    await user.type(nameInput, "custom-renamed-conversation");
+
+    await user.click(screen.getByRole("button", { name: "Analyze 1 messages" }));
+
+    const rankCall = fetchMock.mock.calls.find(([url]) => String(url) === "/api/rank");
+    expect(rankCall).toBeTruthy();
+    const body = JSON.parse((rankCall?.[1] as RequestInit).body as string);
+    expect(body.conversation.conversationId).toBe("custom-renamed-conversation");
+  });
+
+  it("allows renaming an active conversation on the workbench", async () => {
+    const scenario = getScenario("finance-reframe");
+    const conversation = {
+      conversationId: "import-original-name",
+      userId: "finance-user",
+      domain: { name: "finance" },
+      messages: scenario.messages.slice(0, 2),
+      acceptedOutcomes: [],
+    };
+    const result = rankConversation(scenario, conversation.messages, DEFAULT_WEIGHTS);
+    let resolveRename: ((response: Response) => void) | undefined;
+    const renameResponse = new Promise<Response>((resolve) => {
+      resolveRename = resolve;
+    });
+    const fetchMock = vi.fn(
+      async (...args: [input: RequestInfo | URL, init?: RequestInit]) => {
+        const [input, init] = args;
+        if (String(input) === "/api/state") {
+          return new Response(
+            JSON.stringify({
+              reference: { id: "run-1", state: "decided" },
+              run: {
+                provider: "codex",
+                conversation,
+                input: scenario,
+                result,
+              },
+            }),
+          );
+        }
+        if (String(input) === "/api/queue" && init?.method === "PATCH") {
+          return renameResponse;
+        }
+        if (String(input) === "/api/queue") {
+          return new Response(JSON.stringify({
+            tasks: [{
+              id: "task-1",
+              externalConversationId: conversation.conversationId,
+              revision: 1,
+              state: "decided",
+              attempts: 1,
+              request: { ownerId: "owner-1", provider: "codex", conversation, weights: DEFAULT_WEIGHTS },
+              result: {
+                provider: { id: "codex", name: "Codex CLI", fallback: false, notes: "Stored." },
+                input: scenario,
+                result,
+                persistence: { enabled: true, identified: true, state: "decided", rankingRunId: "run-1" },
+              },
+              createdAt: "2026-08-14T09:00:00.000Z",
+              updatedAt: "2026-08-14T09:01:00.000Z",
+            }],
+          }));
+        }
+        return new Response(JSON.stringify({ providers: operationalApiProviders }));
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<IntentRanker />);
+
+    expect(await screen.findByRole("heading", { name: "import-original-name" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Expand task sidebar" }));
+    const taskSidebar = screen.getByRole("complementary", { name: "Tasks" });
+    expect(within(taskSidebar).getByText("import-original-name")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Rename conversation" }));
+    const renameInput = screen.getByRole("textbox", { name: "Edit conversation name" });
+    await user.clear(renameInput);
+    await user.type(renameInput, "my-renamed-task");
+    await user.click(screen.getByRole("button", { name: "Save name" }));
+
+    expect(screen.getByRole("heading", { name: "my-renamed-task" })).toBeInTheDocument();
+    expect(within(taskSidebar).getByText("my-renamed-task")).toBeInTheDocument();
+    expect(within(taskSidebar).queryByText("import-original-name")).not.toBeInTheDocument();
+    const renameCall = fetchMock.mock.calls.find(
+      ([url, init]) => String(url) === "/api/queue" && init?.method === "PATCH",
+    );
+    expect(JSON.parse(renameCall?.[1]?.body as string)).toEqual({
+      currentConversationId: "import-original-name",
+      nextConversationId: "my-renamed-task",
+    });
+    resolveRename?.(new Response(JSON.stringify({ renamed: true })));
   });
 });
