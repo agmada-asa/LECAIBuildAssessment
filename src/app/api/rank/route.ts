@@ -187,7 +187,7 @@ export async function POST(request: Request) {
         analysis = await analyseLiveProvider(
           provider,
           formatConversationForProvider(conversation),
-          "The previous response passed the JSON schema but failed normalization. Return at least three genuinely distinct interpretations, ground every constraint phrase in the source text, and ensure every constraint dimension appears in candidate features.",
+          "The previous response passed the JSON schema but failed normalization. Return at least three genuinely distinct interpretations, include a candidate kind matching the conversation assessment, ground assessment message IDs and every constraint phrase in the source text, and ensure every constraint dimension appears in candidate features.",
         );
         input = normalizeProviderAnalysis(analysis, conversation);
       } catch {
@@ -223,7 +223,7 @@ export async function POST(request: Request) {
       analysis = await analyseLiveProvider(
         provider,
         formatConversationForProvider(conversation),
-        "The previous catalogue contained semantic paraphrases. Return at least three mutually exclusive decisions with conflicting canonical features where appropriate; do not pad the catalogue with differently worded versions of one deliverable.",
+        "The previous catalogue contained semantic paraphrases. Return at least three mutually exclusive decisions with conflicting canonical features where appropriate, preserve a candidate kind matching the conversation assessment, and do not pad the catalogue with differently worded versions of one deliverable.",
       );
       input = normalizeProviderAnalysis(analysis, conversation);
       consolidated = await consolidateSemanticDuplicates(

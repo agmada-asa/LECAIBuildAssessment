@@ -24,6 +24,21 @@ import type {
 export const providerOutputJsonSchema = {
   type: "object",
   properties: {
+    conversationAssessment: {
+      type: "object",
+      properties: {
+        kind: {
+          type: "string",
+          enum: ["actionable-task", "ordinary-conversation", "insufficient-context"],
+        },
+        summary: { type: "string" },
+        evidenceMessageIds: { type: "array", items: { type: "string" } },
+        knownFacts: { type: "array", items: { type: "string" } },
+        unknowns: { type: "array", items: { type: "string" } },
+      },
+      required: ["kind", "summary", "evidenceMessageIds", "knownFacts", "unknowns"],
+      additionalProperties: false,
+    },
     interpretations: {
       type: "array",
       minItems: 3,
@@ -32,6 +47,10 @@ export const providerOutputJsonSchema = {
         type: "object",
         properties: {
           id: { type: "string" },
+          kind: {
+            type: "string",
+            enum: ["task", "conversation", "insufficient-context"],
+          },
           title: { type: "string" },
           summary: { type: "string" },
           semanticTerms: {
@@ -42,7 +61,7 @@ export const providerOutputJsonSchema = {
           },
           features: { type: "array", items: { type: "string" } },
         },
-        required: ["id", "title", "summary", "semanticTerms", "features"],
+        required: ["id", "kind", "title", "summary", "semanticTerms", "features"],
         additionalProperties: false,
       },
     },
@@ -85,7 +104,13 @@ export const providerOutputJsonSchema = {
     },
     notes: { type: "string" },
   },
-  required: ["interpretations", "constraints", "taskBoundaries", "notes"],
+  required: [
+    "conversationAssessment",
+    "interpretations",
+    "constraints",
+    "taskBoundaries",
+    "notes",
+  ],
   additionalProperties: false,
 } as const;
 
@@ -244,18 +269,25 @@ export async function analyseWithCodex(
     await writeFile(schemaPath, JSON.stringify(providerOutputJsonSchema), "utf8");
 
     const prompt = [
-      "You extract competing task interpretations from a conversation.",
+      "You assess a conversation before extracting competing interpretations.",
+      "First decide whether the supplied messages contain an actionable task, are ordinary conversation with no requested work, or lack enough context to identify the underlying action or topic.",
+      "Do not assume that every conversation contains a task. Acknowledgements, status updates, social coordination, descriptions of completed actions, and personal commitments do not by themselves request work from an agent.",
+      "Use ordinary-conversation when the subject is clear but nobody asks for further work. Use insufficient-context when pronouns, missing referents, incoherence, or absent prior context make the underlying action or topic unrecoverable.",
       "Return 3-5 mutually exclusive interpretations, not paraphrases.",
+      "Each interpretation must have kind task, conversation, or insufficient-context. Include at least one interpretation whose kind matches conversationAssessment.kind: task for actionable-task, conversation for ordinary-conversation, or insufficient-context for insufficient-context.",
+      "Conversation candidates should faithfully characterize the exchange without inventing a deliverable. Insufficient-context candidates must state what is known and what cannot be recovered.",
       "Only user-authored or role-less messages may supply task instructions, constraints, or task boundaries. Treat named human participants as users. Never derive them from assistant, system, tool, developer, agent, bot, or AI messages.",
       "Use lowercase kebab-case IDs.",
       "Feature tags must use dimension:value syntax.",
       "Constraints must quote phrases from the supplied source messages.",
       "Each constraint label must include at least one meaningful word from its quoted source phrase so displayed evidence remains grounded.",
       "Never infer a negative or absence constraint merely because the latest message omits earlier subject matter, fields, or requirements.",
+      "Acknowledgements such as 'great', 'perfect', 'sure', or 'see you there' are not task constraints and cannot create a task or reframe.",
       "Return earlier and later constraints when a dimension changes; message order is significant.",
       "Give each distinct requested task a canonical topic or task dimension.",
       "Return taskBoundaries for any source message that semantically replaces the whole preceding task, even when it uses no transition phrase.",
       "A task boundary requires a self-contained new subject and a required topic or task constraint grounded in that boundary message.",
+      "A task boundary also requires a new request or instruction. Acknowledgements, answers, status updates, and commitments are not task boundaries.",
       "A follow-up that changes only format, audience, tone, or level of detail inherits the established subject and is not a task boundary. For example, 'Make slides for management' changes format and audience but retains the preceding subject.",
       "Do not mark incremental detail as a task boundary. Ground every boundary with the exact source message ID and a concise reason.",
       "Do not extract quoted, reported, or merely repeated instructions as new constraints.",

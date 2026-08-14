@@ -7,10 +7,17 @@ vi.mock("server-only", () => ({}));
 import { analyseWithOpenAICompatible } from "./openai-compatible";
 
 const analysis = {
+  conversationAssessment: {
+    kind: "actionable-task" as const,
+    summary: "The source contains explicit requests.",
+    evidenceMessageIds: ["M1"],
+    knownFacts: ["The user requested work."],
+    unknowns: [],
+  },
   interpretations: [
-    { id: "a", title: "A", summary: "First", semanticTerms: ["one", "first", "alpha"], features: ["format:a"] },
-    { id: "b", title: "B", summary: "Second", semanticTerms: ["two", "second", "beta"], features: ["format:b"] },
-    { id: "c", title: "C", summary: "Third", semanticTerms: ["three", "third", "gamma"], features: ["format:c"] },
+    { id: "a", kind: "task" as const, title: "A", summary: "First", semanticTerms: ["one", "first", "alpha"], features: ["format:a"] },
+    { id: "b", kind: "task" as const, title: "B", summary: "Second", semanticTerms: ["two", "second", "beta"], features: ["format:b"] },
+    { id: "c", kind: "task" as const, title: "C", summary: "Third", semanticTerms: ["three", "third", "gamma"], features: ["format:c"] },
   ],
   constraints: [],
   taskBoundaries: [],

@@ -4,6 +4,7 @@ import { z } from "zod";
 
 const interpretationSchema = z.object({
   id: z.string().trim().min(1),
+  kind: z.enum(["task", "conversation", "insufficient-context"]).optional(),
   title: z.string().trim().min(1),
   summary: z.string().trim().min(1),
   semanticTerms: z.array(z.string().trim().min(1)).min(1),
@@ -41,4 +42,16 @@ export const rankingInputSchema = z.object({
       }),
     )
     .optional(),
+  conversationAssessment: z.object({
+    kind: z.enum([
+      "actionable-task",
+      "ordinary-conversation",
+      "insufficient-context",
+      "undetermined",
+    ]),
+    summary: z.string().trim().min(1),
+    evidenceMessageIds: z.array(z.string().trim().min(1)),
+    knownFacts: z.array(z.string().trim().min(1)),
+    unknowns: z.array(z.string().trim().min(1)),
+  }).optional(),
 });

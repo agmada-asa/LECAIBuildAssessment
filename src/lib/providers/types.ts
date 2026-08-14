@@ -38,6 +38,8 @@ export type ProviderStatus = {
 
 export type ProviderInterpretation = {
   id: string;
+  /** Optional only for compatibility with deterministic fixtures and old tests. */
+  kind?: "task" | "conversation" | "insufficient-context";
   title: string;
   summary: string;
   semanticTerms: string[];
@@ -61,6 +63,14 @@ export type ProviderTaskBoundary = {
 };
 
 export type ProviderAnalysis = {
+  /** Live-provider schemas require this; optionality preserves legacy fixtures. */
+  conversationAssessment?: {
+    kind: "actionable-task" | "ordinary-conversation" | "insufficient-context";
+    summary: string;
+    evidenceMessageIds: string[];
+    knownFacts: string[];
+    unknowns: string[];
+  };
   interpretations: ProviderInterpretation[];
   constraints: ProviderConstraint[];
   taskBoundaries?: ProviderTaskBoundary[];

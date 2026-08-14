@@ -30,8 +30,34 @@ export type ConversationTransition = {
   summary: string;
 };
 
+/** The decision made before candidate ranking begins. */
+export type ConversationAssessmentKind =
+  | "actionable-task"
+  | "ordinary-conversation"
+  | "insufficient-context"
+  | "undetermined";
+
+/** Provider assessment that separates task existence from topic interpretation. */
+export type ConversationAssessment = {
+  kind: ConversationAssessmentKind;
+  summary: string;
+  /** Source messages that support the assessment, validated during normalization. */
+  evidenceMessageIds: string[];
+  knownFacts: string[];
+  /** Material details that cannot be recovered from the supplied log. */
+  unknowns: string[];
+};
+
+/** Candidate role within the pre-ranking actionability decision. */
+export type InterpretationKind =
+  | "task"
+  | "conversation"
+  | "insufficient-context";
+
 export type Interpretation = {
   id: string;
+  /** Optional only for persisted results created before actionability gating. */
+  kind?: InterpretationKind;
   title: string;
   summary: string;
   /** Phrases used by the transparent local semantic scorer. */
@@ -79,6 +105,8 @@ export type RankingInput = {
   history: HistoricalTask[];
   /** Semantic task switches detected upstream; absent for legacy fixtures. */
   taskBoundaries?: TaskBoundary[];
+  /** Absent only for legacy fixtures and persisted results. */
+  conversationAssessment?: ConversationAssessment;
 };
 
 export type Scenario = RankingInput & {

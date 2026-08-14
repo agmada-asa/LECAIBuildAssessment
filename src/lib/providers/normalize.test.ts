@@ -64,6 +64,76 @@ const validAnalysis = {
 };
 
 describe("normalizeProviderAnalysis", () => {
+  it("does not accept a conversational acknowledgement as a task boundary", () => {
+    const dinnerLog: ConversationLog = {
+      conversationId: "dinner",
+      userId: "u1",
+      messages: [
+        { id: "M1", text: "Are we still meeting at the Italian place at 7?", timestamp: "2026-08-14T18:00:00.000Z" },
+        { id: "M2", text: "Yeah. I booked a table for two under my name.", timestamp: "2026-08-14T18:01:00.000Z" },
+        { id: "M3", text: "Perfect, I'll leave work around 6:30.", timestamp: "2026-08-14T18:02:00.000Z" },
+        { id: "M4", text: "Great. See you there.", timestamp: "2026-08-14T18:03:00.000Z" },
+      ],
+      acceptedOutcomes: [],
+    };
+    const result = normalizeProviderAnalysis(
+      {
+        conversationAssessment: {
+          kind: "ordinary-conversation",
+          summary: "The speakers confirm existing dinner arrangements.",
+          evidenceMessageIds: ["M1", "M2", "M3", "M4"],
+          knownFacts: ["They plan to meet for dinner."],
+          unknowns: [],
+        },
+        interpretations: [
+          {
+            id: "ordinary",
+            kind: "conversation",
+            title: "No actionable task detected",
+            summary: "The exchange confirms existing dinner plans.",
+            semanticTerms: ["Italian place", "table for two", "see you there"],
+            features: ["topic:dinner-plans", "actionability:none"],
+          },
+          {
+            id: "summary",
+            kind: "task",
+            title: "Summarize the logistics",
+            summary: "Summarize the dinner plan.",
+            semanticTerms: ["dinner", "restaurant", "logistics"],
+            features: ["topic:dinner-plans", "actionability:task"],
+          },
+          {
+            id: "record",
+            kind: "task",
+            title: "Record the reservation",
+            summary: "Record the table booking.",
+            semanticTerms: ["reservation", "table", "booking"],
+            features: ["topic:dinner-plans", "actionability:task"],
+          },
+        ],
+        constraints: [
+          {
+            id: "invented-summary",
+            phrases: ["See you there"],
+            dimension: "task",
+            value: "summarize-logistics",
+            mode: "require",
+            strength: 1,
+            label: "Summarize see you there logistics",
+          },
+        ],
+        taskBoundaries: [
+          { messageId: "M4", reason: "The final acknowledgement starts a summary task." },
+        ],
+        notes: "Provider over-interpreted M4.",
+      },
+      dinnerLog,
+    );
+
+    expect(result.taskBoundaries).toEqual([]);
+    expect(result.constraintRules).toEqual([]);
+  });
+
   it("creates stable keys and grounds constraints in source messages", () => {
     const result = normalizeProviderAnalysis(validAnalysis, log);
 

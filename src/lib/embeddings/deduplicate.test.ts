@@ -55,4 +55,20 @@ describe("semantic duplicate consolidation", () => {
     expect(result.candidates).toHaveLength(2);
     expect(result.duplicates).toEqual([]);
   });
+
+  it("never merges task and non-task readings", async () => {
+    const task = candidate("task", "Dinner plan", ["topic:dinner"]);
+    const conversation = {
+      ...candidate("conversation", "Dinner plan", ["topic:dinner"]),
+      kind: "conversation" as const,
+    };
+
+    const result = await consolidateSemanticDuplicates(
+      [task, conversation],
+      new LocalEmbeddingProvider(),
+    );
+
+    expect(result.candidates).toHaveLength(2);
+    expect(result.duplicates).toEqual([]);
+  });
 });
