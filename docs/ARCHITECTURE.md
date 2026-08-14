@@ -14,6 +14,7 @@ Selected provider → ProviderAnalysis (3–5 candidates)
 Provider normalization
         ├── stable candidate keys and distinctness
         ├── grounded constraints with source IDs
+        ├── embedding-assisted duplicate consolidation
         └── relevant accepted historical outcomes
         │
         ▼
@@ -54,6 +55,12 @@ late provider response cannot install candidates from an obsolete log.
 
 This makes the demo reproducible and prevents provider session memory from becoming an undocumented fourth signal.
 
+Imported conversations and appended messages are also revisioned in the local
+queue before analysis. A bounded callable worker claims leased tasks, commits
+by revision/token compare-and-swap, recovers expired processing leases after a
+restart, and reranks only the changed conversation. The queue view exposes full
+ranked evidence for `human_review` tasks and permits failed-task retries.
+
 ## Rendering boundary
 
 The root layout remains a Next.js Server Component and owns only metadata,
@@ -67,14 +74,27 @@ separate `next/font` CSS variables, avoiding external browser font requests.
 
 ## Semantic score
 
-The zero-setup implementation uses inspectable phrases and token overlap:
+`EmbeddingProvider` records provider, model, immutable revision, fixed
+dimensions, input limit, deployment location, and production/demo purpose. One
+provider instance embeds candidate title/summary/terms, each active-task
+message, and accepted/corrected outcome text. The scorer calculates cosine
+similarity per message, applies `0.5 ^ age` recency decay, and retains the
+closest source message as evidence. A separately labelled lexical component
+keeps exact matching inspectable and suppresses explicitly negated phrase
+support. The two components form a bounded hybrid score.
 
-1. Candidate terms are matched against every processed message.
-2. Older message matches decay by `0.76 ^ age`.
-3. Negated phrases such as “no slides” do not count as semantic support for slides.
-4. The four strongest term matches are combined with title/summary token overlap.
-
-This is intentionally simpler than production embeddings, but it is deterministic and testable. A local embedding implementation can replace this scorer without changing the ranker contract.
+The application accepts only a pinned OpenAI-compatible API model and fails
+closed when its configuration is incomplete. The deterministic feature hash is
+an injected unit-test fixture, not a selectable runtime, production model, or
+rollback. The cache namespace includes provider,
+model, revision, dimensions, and normalized input. Model changes produce an
+explicit re-embedding plan and tagged cosine rejects incompatible vectors. The
+remote adapter chunks long inputs with source-offset provenance, batches work,
+applies timeout/transient-retry policy, validates indexes and dimensions, and
+reports only aggregate cache, latency, volume, retry, and failure metrics.
+Initial server results retain those computed
+axes; browser weight changes recombine the same axes rather than substituting a
+different model.
 
 ## Constraint score
 
@@ -118,13 +138,44 @@ constraint objects, matched source text, and source-message IDs.
 
 ## Historical score
 
-Historical examples are accepted outcomes, not merely earlier chat messages. The scorer compares the current conversation with tasks previously resolved to the same canonical interpretation. This keeps historical pattern matching distinct from current-conversation semantic similarity.
+Historical examples are accepted or corrected outcomes, not merely earlier
+chat messages. SQLite retrieval first filters by browser owner, imported user,
+exact domain, acceptance state, and model identity, then calculates cosine
+similarity and retains outcome provenance. The scorer maps
+that outcome to each current candidate by embedding similarity, so generated
+candidate IDs do not need to match historical IDs. This keeps historical
+pattern matching distinct from current-conversation semantic similarity.
 
 ## Confidence and abstention
 
 Weighted evidence scores are converted to relative confidence with softmax at temperature `0.17`. This makes the ordering legible but does not establish empirical calibration.
 
 The abstention layer looks at evidence sufficiency, leader confidence, and the leader/runner-up margin. It is deliberately separate from candidate generation, so any provider must obey the same human-review policy.
+
+Review output includes a stable reason code and a clarification question based
+on the first differing top-two feature dimension. A provider-grounded task
+switch is also forced to review when none of the current candidates represents
+the new required topic/task feature; stale candidates cannot remain decision
+ready.
+
+## Durable state and security
+
+The local SQLite database stores complete conversation/ranking snapshots and
+task outcomes. `(conversation_id, idempotency_key)` prevents retry duplication,
+and each run records the complete normalized weight policy and original message
+order. Outcome vectors are stored as JSON and cosine-ranked in process because
+the local assessment data set does not justify a separate vector extension.
+
+A random UUID in browser local storage identifies one browser owner separately
+from the canonical user named by an imported log. Every state lookup, ranking
+write, queue claim, history query, and feedback ownership check is scoped to
+that owner; history additionally requires the imported user and exact domain.
+This avoids hardware fingerprinting and cross-log history contamination, but it is
+pseudonymous local isolation rather than authentication for a shared service.
+
+SQLite is the shipped backend. No Supabase, pgvector, or hosted RLS path is
+presented as operational; a shared deployment would require authenticated
+tenant identity and a separate reviewed migration.
 
 ## User-controlled weights
 
@@ -142,14 +193,15 @@ Weight changes affect ranking influence, not the underlying evidence. Conflict b
 - Extracted constraints grounded in conversation phrases.
 - Source-grounded semantic task boundaries for unrelated topic replacements.
 
-Providers do not choose the winner. This prevents Codex, Ollama, or another
+Providers do not choose the winner. This prevents Codex, an API model, or another
 future adapter from silently replacing the application's scoring policy.
 
 Provider output is normalized before ranking. Candidate IDs are derived from
 titles, feature tags must use `dimension:value`, constraints must match a source
 message and a candidate feature dimension, substantially overlapping candidates
 are merged, and fewer than three distinct results are rejected. Message order and
-source IDs carry provenance; the pipeline does not require speaker roles.
+source IDs carry provenance. Explicit assistant/system/tool authors are not
+scored as new instructions; role-less logs intentionally retain all messages.
 Constraint display labels must retain meaningful language from their grounded
 source phrases; claims inferred only from omission are discarded. Cue-free task
 boundaries must introduce a required `topic` or `task` constraint in the same
@@ -195,14 +247,15 @@ It does not reveal or request hidden model reasoning. Reviewers can trace every 
 Domain tests cover invariant behaviours rather than exact floating-point
 snapshots, including value changes, polarity reversals, paraphrases, quoted and
 reported text, cue-free unrelated topic switches, complete task switches, stale reframe prevention, full score
-deltas, cue-free reframes, and invalid weight policies. Provider
-tests cover subprocess isolation, normalization, retries, and structured errors.
+deltas, cue-free reframes, and invalid weight policies. Provider tests cover
+subprocess isolation, OpenAI-compatible key handling, normalization, retries,
+timeouts, and structured errors.
 Parser tests cover valid, incomplete, and malformed JSON, CSV, and TXT. JSDOM
 component tests cover the initial candidate list, import preview, accessible
 selection state, optional provider discovery, and the contradictory-message rank
 shift.
 
-Manual browser and computer-use checks cover:
+The automated Chrome walkthrough and manual browser checks cover:
 
 - Initial ranking visibility.
 - Processing the contradictory third message.
@@ -211,4 +264,10 @@ Manual browser and computer-use checks cover:
 - Ranking-policy preset controls.
 - Local provider discovery.
 
-The production build performs the final TypeScript and route compilation check.
+The 22-case labelled scorer evaluation uses fixed catalogues and gates top-one
+and escalation metrics. A separate provider-inclusive suite begins with raw
+logs and measures grounding, duplicate rate, top-one accuracy, review accuracy,
+and false review across the audited open-set/state cases. Playwright exercises
+the contradiction walkthrough, dentist/flights/apology grounding, and the
+seven-message finance resumption through the running Next.js app. The production
+build performs the final TypeScript and route compilation check.
