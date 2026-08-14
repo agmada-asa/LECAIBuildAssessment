@@ -27,6 +27,13 @@ export type ConversationPanelProps = {
   onReset: () => void;
 };
 
+/** Formats imported timestamps without presenting parser placeholders as real dates. */
+function messageTime(timestamp: string, index: number): string {
+  return timestamp.startsWith("2000-01-01T00:")
+    ? `Message ${index + 1} · time unavailable`
+    : timestamp;
+}
+
 /** Shows the exact conversational evidence processed so far. */
 export function ConversationPanel({
   messages,
@@ -44,11 +51,11 @@ export function ConversationPanel({
   const canProcessFixture = fixtureMessagesRead < totalFixtureMessages;
 
   return (
-    <section className="flex min-h-[580px] flex-col overflow-hidden rounded-2xl border bg-card shadow-sm xl:h-[calc(100vh-104px)]">
+    <section className="order-3 flex min-h-[480px] max-h-[70vh] flex-col overflow-hidden rounded-2xl border bg-card shadow-sm xl:order-1 xl:h-[calc(100vh-104px)] xl:max-h-none">
       <div className="border-b px-5 py-4">
         <div className="flex items-center justify-between gap-3">
           <h2 className="font-heading text-base font-semibold">Conversation</h2>
-          <Badge variant="secondary" className="rounded-full px-2.5 font-mono text-[10px]">
+          <Badge variant="secondary" className="rounded-full px-2.5 font-mono text-xs">
             {fixtureMessagesRead}/{totalFixtureMessages} read
           </Badge>
         </div>
@@ -72,12 +79,12 @@ export function ConversationPanel({
               className="animate-in fade-in slide-in-from-bottom-2 duration-300"
             >
               <div className="mb-1.5 flex items-center gap-2 px-1">
-                <span className="font-mono text-[10px] font-semibold text-muted-foreground">
+                <span className="font-mono text-xs font-semibold text-muted-foreground">
                   {message.id}
                 </span>
-                <span className="text-[10px] text-muted-foreground/70">{message.timestamp}</span>
+                <span className="text-xs text-muted-foreground/70">{messageTime(message.timestamp, index)}</span>
                 {index === messages.length - 1 && (
-                  <Badge className="ml-auto h-5 rounded-full bg-primary/10 px-2 text-[9px] text-primary shadow-none">
+                  <Badge className="ml-auto h-5 rounded-full bg-primary/10 px-2 text-xs text-primary shadow-none">
                     Latest
                   </Badge>
                 )}
@@ -154,7 +161,7 @@ export function ConversationPanel({
         <button
           type="button"
           onClick={onReset}
-          className="flex w-full items-center justify-center gap-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+          className="flex w-full items-center justify-center gap-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2"
         >
           <HugeiconsIcon icon={Refresh01Icon} className="size-3.5" strokeWidth={2} />
           Reset conversation

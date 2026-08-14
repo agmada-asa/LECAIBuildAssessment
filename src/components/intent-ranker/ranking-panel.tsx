@@ -59,7 +59,7 @@ function InterpretationCard({
           <div className="flex items-start justify-between gap-3">
             <div>
               <h3 className="font-heading text-sm font-semibold leading-5">{item.title}</h3>
-              <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
+              <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">
                 {item.summary}
               </p>
             </div>
@@ -70,7 +70,7 @@ function InterpretationCard({
               {item.deltas && (
                 <p
                   className={cn(
-                    "font-mono text-[9px]",
+                    "font-mono text-xs",
                     item.deltas.confidence > 0
                       ? "text-emerald-700"
                       : item.deltas.confidence < 0
@@ -81,7 +81,7 @@ function InterpretationCard({
                   {pointDelta(item.deltas.confidence)}
                 </p>
               )}
-              <p className="text-[9px] font-semibold tracking-wider text-muted-foreground uppercase">
+              <p className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
                 relative confidence
               </p>
             </div>
@@ -102,7 +102,7 @@ function InterpretationCard({
             {movement !== 0 ? (
               <span
                 className={cn(
-                  "flex items-center gap-1 text-[10px] font-semibold",
+                  "flex items-center gap-1 text-xs font-semibold",
                   movement > 0 ? "text-emerald-700" : "text-rose-700",
                 )}
               >
@@ -114,9 +114,9 @@ function InterpretationCard({
                 {Math.abs(movement)} place{Math.abs(movement) === 1 ? "" : "s"}
               </span>
             ) : (
-              <span className="text-[10px] text-muted-foreground">Rank unchanged</span>
+              <span className="text-xs text-muted-foreground">Rank unchanged</span>
             )}
-            <span className="font-mono text-[10px] text-muted-foreground">
+            <span className="font-mono text-xs text-muted-foreground">
               <span>weighted score {item.total.toFixed(3)}</span>
               {item.deltas && (
                 <span>{` (${item.deltas.total >= 0 ? "+" : ""}${item.deltas.total.toFixed(3)})`}</span>
@@ -143,7 +143,7 @@ export function RankingPanel({
   const movement = rankMovement(winner);
 
   return (
-    <section className="min-w-0">
+    <section className="order-1 min-w-0 xl:order-2">
       <div className="mb-4 flex items-end justify-between gap-4">
         <div className="flex items-center gap-2">
           <h2 className="font-heading text-2xl font-semibold tracking-tight">
@@ -170,7 +170,7 @@ export function RankingPanel({
         <Badge
           variant="outline"
           className={cn(
-            "h-7 rounded-full px-3 text-[10px] font-semibold",
+            "h-7 rounded-full px-3 text-xs font-semibold",
             result.uncertain
               ? "border-amber-300 bg-amber-50 text-amber-800"
               : "border-emerald-200 bg-emerald-50 text-emerald-800",

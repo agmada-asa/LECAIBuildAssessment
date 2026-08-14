@@ -161,31 +161,65 @@ export async function getProviderStatuses(): Promise<ProviderStatus[]> {
       process.env.OPENAI_COMPATIBLE_API_KEY &&
       process.env.OPENAI_COMPATIBLE_ANALYSIS_MODEL,
   );
+  let apiOperational = false;
+  let apiDetail = apiConfigured
+    ? "Configured, but the readiness check failed"
+    : "Add the server-only API URL, key, and analysis model";
 
-  return [
-    {
-      id: "demo",
-      name: "Deterministic demo",
-      available: true,
-      localInference: true,
-      detail: "No account or network required",
-    },
+  if (apiConfigured) {
+    try {
+      const baseUrl = process.env.OPENAI_COMPATIBLE_BASE_URL!.replace(/\/$/, "");
+      const model = process.env.OPENAI_COMPATIBLE_ANALYSIS_MODEL!;
+      const response = await fetch(`${baseUrl}/models`, {
+        headers: { authorization: `Bearer ${process.env.OPENAI_COMPATIBLE_API_KEY}` },
+        signal: AbortSignal.timeout(3_000),
+      });
+      const body = response.ok
+        ? await response.json() as { data?: Array<{ id?: string }> }
+        : undefined;
+      apiOperational = Boolean(body?.data?.some((item) => item.id === model));
+      apiDetail = response.ok
+        ? apiOperational
+          ? "Configured and ready"
+          : "Configured; selected model was not listed"
+        : `Configured; readiness check returned HTTP ${response.status}`;
+    } catch {
+      // The bounded readiness result is intentionally credential- and text-free.
+    }
+  }
+
+  const liveProviders: ProviderStatus[] = [
     {
       id: "codex",
       name: "Codex CLI",
       available: codexAvailable,
+      configured: codexAvailable,
+      operational: codexAvailable,
       localInference: false,
       detail: codexVersion,
     },
     {
       id: "api",
       name: "OpenAI-compatible API",
-      available: apiConfigured,
+      available: apiOperational,
+      configured: apiConfigured,
+      operational: apiOperational,
       localInference: false,
-      detail: apiConfigured
-        ? "Server API settings are configured"
-        : "Add the server-only API URL, key, and analysis model",
+      detail: apiDetail,
     },
+  ];
+  if (process.env.NODE_ENV !== "test") return liveProviders;
+  return [
+    {
+      id: "demo",
+      name: "Deterministic test fixture",
+      available: true,
+      configured: true,
+      operational: true,
+      localInference: true,
+      detail: "Available only to automated tests",
+    },
+    ...liveProviders,
   ];
 }
 

@@ -49,6 +49,8 @@ export function ConversationImportDialog({
   const [preview, setPreview] = useState<ConversationLog>();
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const selectedProvider = providers.find((item) => item.id === provider);
+  const providerReady = Boolean(selectedProvider?.operational);
 
   /** Validates current text without starting analysis. */
   function createPreview(nextSource = source, nextFilename = filename) {
@@ -114,6 +116,15 @@ export function ConversationImportDialog({
         </DialogHeader>
 
         <div className="space-y-4 pt-2">
+          {!providers.some((item) => item.operational) && (
+            <Alert role="status" className="border-amber-200 bg-amber-50 text-amber-950">
+              <HugeiconsIcon icon={Alert02Icon} className="size-4" strokeWidth={2} />
+              <AlertTitle className="text-xs">No provider is ready</AlertTitle>
+              <AlertDescription className="text-xs">
+                Check the server configuration or Codex CLI, then reopen this dialog to retry discovery.
+              </AlertDescription>
+            </Alert>
+          )}
           <div>
             <label htmlFor="analysis-provider" className="mb-2 block text-xs font-semibold">
               Provider
@@ -129,14 +140,14 @@ export function ConversationImportDialog({
               >
                 <SelectValue>
                   {providers.find((item) => item.id === provider)?.name ??
-                    "Deterministic demo"}
+                    "No operational provider"}
                 </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {providers.map((item) => (
-                  <SelectItem key={item.id} value={item.id} disabled={!item.available}>
+                  <SelectItem key={item.id} value={item.id} disabled={!item.operational}>
                     {item.name}
-                    {item.available ? "" : " — unavailable"}
+                    {item.operational ? "" : item.configured ? " — not ready" : " — unavailable"}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -221,7 +232,7 @@ export function ConversationImportDialog({
               </div>
               <Button
                 className="mt-3 w-full rounded-xl"
-                disabled={submitting}
+                disabled={submitting || !providerReady}
                 onClick={() => void submit()}
               >
                 {submitting ? "Analyzing…" : `Analyze ${preview.messages.length} messages`}
@@ -229,16 +240,6 @@ export function ConversationImportDialog({
             </section>
           )}
 
-          <p className="text-[10px] text-muted-foreground">
-            Samples:{" "}
-            <a className="underline" href="/samples/finance-reframe.json" download>
-              Finance reframe
-            </a>
-            {" · "}
-            <a className="underline" href="/samples/weekly-ambiguity.csv" download>
-              Weekly ambiguity
-            </a>
-          </p>
         </div>
       </DialogContent>
     </Dialog>

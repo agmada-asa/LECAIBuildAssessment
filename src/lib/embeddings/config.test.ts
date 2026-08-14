@@ -58,4 +58,19 @@ describe("embedding runtime configuration", () => {
 
     expect(provider.model.purpose).toBe("demo/test");
   });
+
+  it("keeps ordinary tests deterministic when a local env file selects production", () => {
+    const provider = createConfiguredEmbeddingProvider({
+      NODE_ENV: "test",
+      EMBEDDING_PROVIDER: "openai-compatible",
+      OPENAI_COMPATIBLE_BASE_URL: "https://example.invalid/v1",
+      OPENAI_COMPATIBLE_API_KEY: "not-used",
+      OPENAI_COMPATIBLE_EMBEDDING_MODEL: "hosted-model",
+      OPENAI_COMPATIBLE_EMBEDDING_REVISION: "revision",
+      OPENAI_COMPATIBLE_EMBEDDING_DIMENSIONS: "8",
+      OPENAI_COMPATIBLE_EMBEDDING_MAX_INPUT_TOKENS: "100",
+    });
+
+    expect(provider.model.purpose).toBe("demo/test");
+  });
 });

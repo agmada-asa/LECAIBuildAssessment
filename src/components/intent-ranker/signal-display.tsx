@@ -33,7 +33,7 @@ export function SignalBar({
 }) {
   return (
     <div className="grid grid-cols-[92px_1fr_72px] items-center gap-2.5">
-      <span className="text-[11px] font-medium text-muted-foreground">
+      <span className="text-xs font-medium text-muted-foreground">
         {SIGNAL_META[signal].shortLabel}
       </span>
       <div className="h-1.5 overflow-hidden rounded-full bg-muted">
@@ -45,7 +45,7 @@ export function SignalBar({
           style={{ width: percentage(value) }}
         />
       </div>
-      <span className="text-right font-mono text-[10px] font-semibold tabular-nums text-muted-foreground">
+      <span className="text-right font-mono text-xs font-semibold tabular-nums text-muted-foreground">
         {percentage(value)}
         {delta !== undefined && (
           <span

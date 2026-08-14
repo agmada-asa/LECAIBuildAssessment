@@ -68,23 +68,15 @@ export function useIntentRanker() {
   const [remoteResult, setRemoteResult] = useState<RankingResult>();
   const [persistence, setPersistence] =
     useState<RankSuccessResponse["persistence"]>();
-  const [selectedProvider, setSelectedProvider] = useState<ProviderId>("demo");
+  const [selectedProvider, setSelectedProvider] = useState<ProviderId>("api");
   const [analysisSource, setAnalysisSource] =
     useState<RankSuccessResponse["provider"]>();
   const [analysisError, setAnalysisError] = useState("");
   const [outcomeStatus, setOutcomeStatus] = useState("");
-  const [providers, setProviders] = useState<ProviderStatus[]>([
-    {
-      id: "demo",
-      name: "Deterministic demo",
-      available: true,
-      localInference: true,
-      detail: "No account or network required",
-    },
-  ]);
+  const [providers, setProviders] = useState<ProviderStatus[]>([]);
   const requestSequence = useRef(0);
   const activeRequest = useRef<ActiveRequest | undefined>(undefined);
-  const fixtureTimer = useRef<number | undefined>(undefined);
+  const [resultStale, setResultStale] = useState(false);
 
   const scenario = getScenario(scenarioId);
   const messages = useMemo(
@@ -113,7 +105,14 @@ export function useIntentRanker() {
     fetch("/api/providers", { signal: controller.signal })
       .then((response) => response.json())
       .then((data: { providers?: ProviderStatus[] }) => {
-        if (data.providers) setProviders(data.providers);
+        if (data.providers) {
+          const liveProviders = data.providers.filter((provider) => provider.id !== "demo");
+          setProviders(liveProviders);
+          const readyProvider =
+            liveProviders.find((provider) => provider.id === "api" && provider.operational) ??
+            liveProviders.find((provider) => provider.operational);
+          if (readyProvider) setSelectedProvider(readyProvider.id);
+        }
       })
       .catch(() => {
         // Discovery is optional; the deterministic demo remains usable.
@@ -129,7 +128,7 @@ export function useIntentRanker() {
     })
       .then(async (response) => response.ok ? response.json() : undefined)
       .then((state: { run?: { conversation: ConversationLog; input: RankingInput; result: RankingResult; provider: ProviderId }; reference?: { id: string; state: RankSuccessResponse["persistence"]["state"] } } | undefined) => {
-        if (!state?.run || !state.reference) return;
+        if (!state?.run || !state.reference || state.run.provider === "demo") return;
         setImportedLog(state.run.conversation);
         setRemoteInput(state.run.input);
         setRemoteResult(state.run.result);
@@ -146,7 +145,6 @@ export function useIntentRanker() {
   useEffect(
     () => () => {
       activeRequest.current?.controller.abort();
-      if (fixtureTimer.current !== undefined) window.clearTimeout(fixtureTimer.current);
     },
     [],
   );
@@ -156,10 +154,6 @@ export function useIntentRanker() {
     requestSequence.current += 1;
     activeRequest.current?.controller.abort();
     activeRequest.current = undefined;
-    if (fixtureTimer.current !== undefined) {
-      window.clearTimeout(fixtureTimer.current);
-      fixtureTimer.current = undefined;
-    }
     setIsProcessing(false);
     setIsImporting(false);
   }
@@ -238,32 +232,29 @@ export function useIntentRanker() {
     setAnalysisSource(undefined);
     setAnalysisError("");
     setOutcomeStatus("");
+    setResultStale(false);
   }
 
-  /** Reveals the next fixture message after a short processing state. */
+  /** Advances a reproducible sample immediately and persists the same canonical snapshot. */
   function handleProcessNext() {
     if (visibleMessageCount >= scenario.messages.length || isProcessing) return;
-    setIsProcessing(true);
-    fixtureTimer.current = window.setTimeout(() => {
-      const nextMessages = scenario.messages.slice(0, visibleMessageCount + 1);
-      fixtureTimer.current = undefined;
-      setSelectedId("");
-      setVisibleMessageCount((count) => count + 1);
-      setRemoteInput(undefined);
-      setRemotePreviousInput(undefined);
-      setRemoteResult(undefined);
-      setAnalysisSource(undefined);
-      setIsProcessing(false);
-      requestRanking(
+    const nextMessages = scenario.messages.slice(0, visibleMessageCount + 1);
+    setVisibleMessageCount((count) => count + 1);
+    setSelectedId("");
+    setRemoteInput(undefined);
+    setRemotePreviousInput(undefined);
+    setRemoteResult(undefined);
+    setAnalysisSource(undefined);
+    setAnalysisError("");
+    setResultStale(false);
+    requestRanking(
         scenarioConversationLog(scenario, nextMessages),
         selectedProvider,
         weights,
         scenario,
-      )
-        .catch(() => {
-          // The deterministic transition remains usable if persistence is unavailable.
-        });
-    }, 650);
+      ).catch(() => {
+        // Sample exploration remains deterministic when optional persistence is unavailable.
+      });
   }
 
   /** Appends a non-persistent message and reruns the complete provider pipeline. */
@@ -289,6 +280,7 @@ export function useIntentRanker() {
     setSelectedId("");
     setCustomMessage("");
     setAnalysisError("");
+    setResultStale(false);
     setOutcomeStatus("");
     try {
       const queued = await enqueueConversation(log, selectedProvider);
@@ -312,6 +304,7 @@ export function useIntentRanker() {
       else setCustomMessages(previousCustomMessages);
       setCustomMessage(text);
       setAnalysisError(caught instanceof Error ? caught.message : "Analysis failed.");
+      setResultStale(true);
     } finally {
       completeRequest(request);
     }
@@ -331,6 +324,7 @@ export function useIntentRanker() {
     setPersistence(undefined);
     setAnalysisSource(undefined);
     setAnalysisError("");
+    setResultStale(false);
     fetch("/api/state", {
       method: "DELETE",
       headers: { [DEVICE_ID_HEADER]: getOrCreateDeviceId() },
@@ -400,6 +394,7 @@ export function useIntentRanker() {
     } catch (caught) {
       if (!isCurrentRequest(request)) return;
       setAnalysisError(caught instanceof Error ? caught.message : "Analysis failed.");
+      setResultStale(true);
     } finally {
       if (isCurrentRequest(request)) setIsImporting(false);
       completeRequest(request);
@@ -465,6 +460,7 @@ export function useIntentRanker() {
     providers,
     persistence,
     outcomeStatus,
+    resultStale,
     setCustomMessage,
     setSelectedId,
     setSelectedProvider,

@@ -3,6 +3,7 @@
 import { rankConversation } from "@/lib/ranking/engine";
 import { DEFAULT_WEIGHTS } from "@/lib/ranking/scenarios";
 import { EVALUATION_DATASET, type EvaluationCase } from "./dataset";
+import type { EmbeddingProvider } from "@/lib/embeddings/types";
 
 export type EvaluationMetrics = {
   cases: number;
@@ -25,6 +26,7 @@ export type EvaluationMetrics = {
 /** Evaluates public ranking output without special-case corrections. */
 export function evaluateDataset(
   dataset: EvaluationCase[] = EVALUATION_DATASET,
+  embeddings?: EmbeddingProvider,
 ): EvaluationMetrics {
   let topOneCorrect = 0;
   let reviewDecisionCorrect = 0;
@@ -37,6 +39,8 @@ export function evaluateDataset(
       item.input,
       item.conversation.messages,
       DEFAULT_WEIGHTS,
+      undefined,
+      embeddings,
     );
     const winnerCorrect = result.ranking[0].id === item.expectedWinner;
     const reviewCorrect = result.uncertain === item.expectedHumanReview;

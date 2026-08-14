@@ -34,8 +34,16 @@ const weightsSchema = z.object({
   history: z.number().min(0).max(100),
 });
 
+const providerSchema = z.enum(["demo", "codex", "api"]).refine(
+  (provider) =>
+    process.env.NODE_ENV === "test" ||
+    process.env.RESOLVE_ENABLE_TEST_PROVIDER === "1" ||
+    provider !== "demo",
+  "The deterministic provider is available only to automated tests.",
+);
+
 const requestSchema = z.object({
-  provider: z.enum(["demo", "codex", "api"]),
+  provider: providerSchema,
   conversation: conversationLogSchema,
   weights: weightsSchema.optional(),
   previousInput: rankingInputSchema.optional(),

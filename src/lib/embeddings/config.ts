@@ -11,10 +11,13 @@ import type { EmbeddingProvider } from "./types";
 export function createConfiguredEmbeddingProvider(
   environment: Readonly<Record<string, string | undefined>> = process.env,
 ): EmbeddingProvider {
-  const selection =
-    environment.EMBEDDING_PROVIDER ??
-    (environment.NODE_ENV === "test" ? "demo-feature-hash" : "openai-compatible");
-  if (environment.NODE_ENV === "test" && selection === "demo-feature-hash") {
+  const isDeterministicTest =
+    (environment.NODE_ENV === "test" && environment.EMBEDDING_INTEGRATION !== "true") ||
+    environment.RESOLVE_ENABLE_TEST_PROVIDER === "1";
+  const selection = isDeterministicTest
+    ? "demo-feature-hash"
+    : environment.EMBEDDING_PROVIDER ?? "openai-compatible";
+  if (isDeterministicTest) {
     return embeddingProvider;
   }
   if (selection !== "openai-compatible") {
