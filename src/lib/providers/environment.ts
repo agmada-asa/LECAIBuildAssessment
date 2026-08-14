@@ -35,7 +35,7 @@ const PROVIDER_ENVIRONMENT_KEYS = [
 ] as const;
 
 /**
- * Copies the minimum non-secret environment needed to launch Codex or Ollama.
+ * Copies the minimum non-secret environment needed to launch Codex.
  *
  * @param source Parent process environment to filter.
  * @returns A new environment object containing allowlisted, defined values.

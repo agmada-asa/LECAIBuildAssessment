@@ -14,6 +14,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { IntentRanker } from "./intent-ranker";
+import { EvidencePanel } from "./intent-ranker/evidence-panel";
 import { rankConversation } from "@/lib/ranking/engine";
 import {
   DEFAULT_WEIGHTS,
@@ -54,6 +55,7 @@ describe("IntentRanker", () => {
       "Finance reframe",
     );
     expect(screen.getByText("Create a client review deck")).toBeInTheDocument();
+    expect(screen.getByText("resolve-local-feature-hash@1.0.0")).toBeInTheDocument();
     expect(screen.getByText("Export finance-ready CSV data")).toBeInTheDocument();
     expect(screen.getByText("Publish a performance dashboard")).toBeInTheDocument();
 
@@ -62,6 +64,148 @@ describe("IntentRanker", () => {
       .closest("button");
     expect(reviewDeckCard).toHaveTextContent("1");
     expect(reviewDeckCard).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("stacks decision actions so their labels fit the narrow evidence panel", () => {
+    const scenario = getScenario("finance-reframe");
+    const result = rankConversation(scenario, scenario.messages, DEFAULT_WEIGHTS);
+    render(
+      <EvidencePanel
+        result={result}
+        selected={result.ranking[0]}
+        canSaveOutcome
+        outcomeStatus=""
+        onOutcome={vi.fn()}
+      />,
+    );
+
+    const acceptButton = screen.getByRole("button", { name: "Accept interpretation" });
+    const correctButton = screen.getByRole("button", { name: "Correct interpretation" });
+    const actionGroup = acceptButton.parentElement;
+
+    expect(actionGroup).toBe(correctButton.parentElement);
+    expect(actionGroup).toHaveClass("grid-cols-1");
+    expect(acceptButton).toHaveClass("w-full");
+    expect(correctButton).toHaveClass("w-full");
+  });
+
+  it("requires the actual intended task before saving a correction", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const scenario = getScenario("finance-reframe");
+    const result = rankConversation(scenario, scenario.messages, DEFAULT_WEIGHTS);
+    const onOutcome = vi.fn();
+    render(
+      <EvidencePanel
+        result={result}
+        selected={result.ranking[0]}
+        canSaveOutcome
+        outcomeStatus=""
+        onOutcome={onOutcome}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Correct interpretation" }));
+
+    const intendedTask = screen.getByRole("textbox", { name: "Actual intended task" });
+    expect(screen.getByRole("button", { name: "Save correction" })).toBeDisabled();
+    await user.type(intendedTask, "Write a short apology email to the patient.");
+    await user.click(screen.getByRole("button", { name: "Save correction" }));
+
+    expect(onOutcome).toHaveBeenCalledWith(
+      "corrected",
+      "Write a short apology email to the patient.",
+    );
+  });
+
+  it("restores the recorded provider and imported identity from durable state", async () => {
+    const scenario = getScenario("finance-reframe");
+    const conversation = {
+      conversationId: "restored-log",
+      userId: "imported-finance-user",
+      domain: { name: "finance" },
+      messages: scenario.messages.map((message, index) => ({
+        ...message,
+        timestamp: `2026-08-14T08:0${index}:00.000Z`,
+      })),
+      acceptedOutcomes: [],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input) === "/api/state") {
+          return new Response(
+            JSON.stringify({
+              reference: { id: "run-1", state: "decided" },
+              run: {
+                provider: "codex",
+                conversation,
+                input: scenario,
+                result: rankConversation(scenario, conversation.messages, DEFAULT_WEIGHTS),
+              },
+            }),
+          );
+        }
+        return new Response(JSON.stringify({ providers: [] }));
+      }),
+    );
+
+    render(<IntentRanker />);
+
+    expect(await screen.findByText("Analyzed by Codex CLI")).toBeInTheDocument();
+    expect(screen.getByText("3 messages supplied for imported-finance-user.")).toBeInTheDocument();
+  });
+
+  it("opens an inspectable queue view for multiple conversational tasks", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input) === "/api/queue" && (!init?.method || init.method === "GET")) {
+          return new Response(
+            JSON.stringify({
+              tasks: [
+                {
+                  id: "task-1",
+                  externalConversationId: "finance-proposal",
+                  revision: 2,
+                  state: "human_review",
+                  attempts: 1,
+                  request: { conversation: { messages: [{}, {}, {}] } },
+                  result: {
+                    result: {
+                      ranking: [{ title: "Write the rate-limiting proposal", confidence: 0.64 }],
+                    },
+                  },
+                  createdAt: "2026-08-14T09:00:00.000Z",
+                  updatedAt: "2026-08-14T09:01:00.000Z",
+                },
+                {
+                  id: "task-2",
+                  externalConversationId: "apology-email",
+                  revision: 1,
+                  state: "pending",
+                  attempts: 0,
+                  request: { conversation: { messages: [{}] } },
+                  createdAt: "2026-08-14T09:02:00.000Z",
+                  updatedAt: "2026-08-14T09:02:00.000Z",
+                },
+              ],
+            }),
+          );
+        }
+        if (String(input) === "/api/state") return new Response(null, { status: 204 });
+        return new Response(JSON.stringify({ providers: [] }));
+      }),
+    );
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<IntentRanker />);
+
+    await user.click(screen.getByRole("button", { name: "Task queue" }));
+
+    expect(await screen.findByRole("heading", { name: "Task queue" })).toBeInTheDocument();
+    expect(screen.getByText("finance-proposal")).toBeInTheDocument();
+    expect(screen.getByText("apology-email")).toBeInTheDocument();
+    expect(screen.getByText(/Write the rate-limiting proposal/)).toBeInTheDocument();
+    expect(screen.getByText("human review")).toBeInTheDocument();
   });
 
   it("moves the CSV interpretation to rank one after processing the reframe", async () => {
@@ -151,7 +295,9 @@ describe("IntentRanker", () => {
     await user.click(screen.getByRole("button", { name: "Analyze 3 messages" }));
 
     const rankCall = fetchMock.mock.calls.find(([url]) => String(url) === "/api/rank");
+    const queueCall = fetchMock.mock.calls.find(([url]) => String(url) === "/api/queue");
     expect(rankCall).toBeTruthy();
+    expect(queueCall).toBeTruthy();
     const body = JSON.parse((rankCall?.[1] as RequestInit).body as string);
     expect(body.conversation.messages.map((message: { id: string }) => message.id)).toEqual([
       "request-17",
@@ -174,6 +320,33 @@ describe("IntentRanker", () => {
 
     expect(screen.getAllByText("M1").length).toBeGreaterThan(0);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("closes the import dialog and shows the workbench as pending during analysis", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        if (String(input) === "/api/rank") return new Promise<Response>(() => undefined);
+        return Promise.reject(new Error("Provider discovery is unavailable."));
+      }),
+    );
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<IntentRanker />);
+
+    await user.click(screen.getByRole("button", { name: "Analyze a log" }));
+    await user.type(
+      screen.getByRole("textbox", { name: "Paste conversation log" }),
+      "Prepare the quarterly review.",
+    );
+    await user.click(screen.getByRole("button", { name: "Preview conversation" }));
+    await user.click(screen.getByRole("button", { name: "Analyze 1 messages" }));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Analysis in progress" })).toHaveTextContent(
+      "Analyzing conversation…",
+    );
+    expect(screen.getByRole("main")).toHaveAttribute("aria-busy", "true");
+    expect(screen.queryByRole("heading", { name: "Plausible readings" })).not.toBeInTheDocument();
   });
 
   it("moves a submitted follow-up into the chat before ranking finishes", async () => {
@@ -225,18 +398,44 @@ describe("IntentRanker", () => {
     );
   });
 
+  it("submits a follow-up with Enter and keeps Shift+Enter for a new line", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        if (String(input) === "/api/rank") return new Promise<Response>(() => undefined);
+        return Promise.reject(new Error("Provider discovery is unavailable."));
+      }),
+    );
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<IntentRanker />);
+
+    await user.click(screen.getByRole("button", { name: "Process next message" }));
+    await act(async () => {
+      vi.advanceTimersByTime(650);
+    });
+
+    const input = screen.getByRole("textbox", { name: "Add a follow-up message" });
+    await user.type(input, "First line");
+    await user.keyboard("{Shift>}{Enter}{/Shift}Second line");
+
+    expect(input).toHaveValue("First line\nSecond line");
+
+    await user.keyboard("{Enter}");
+
+    expect(input).toHaveValue("");
+    expect(screen.getByText(/First line\s+Second line/)).toBeInTheDocument();
+  });
+
   it("ignores a provider response after the conversation has been reset", async () => {
     let finishRanking: ((response: Response) => void) | undefined;
     const pendingRanking = new Promise<Response>((resolve) => {
       finishRanking = resolve;
     });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((input: RequestInfo | URL) => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
         if (String(input) === "/api/rank") return pendingRanking;
         return Promise.reject(new Error("Provider discovery is unavailable."));
-      }),
-    );
+      });
+    vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     render(<IntentRanker />);
 
@@ -248,6 +447,11 @@ describe("IntentRanker", () => {
     );
     await user.click(screen.getByRole("button", { name: "Add follow-up message" }));
     await user.click(screen.getByRole("button", { name: "Reset conversation" }));
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/state",
+      expect.objectContaining({ method: "DELETE" }),
+    );
 
     const staleScenario = getScenario("weekly-ambiguity");
     finishRanking?.(

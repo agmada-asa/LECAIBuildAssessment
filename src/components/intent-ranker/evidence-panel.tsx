@@ -1,11 +1,15 @@
 /** @file Auditable ranking explanation, reframe, delta, and evidence panel. */
 
+import { useState } from "react";
+
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Alert02Icon, GitCompareIcon, SparklesIcon } from "@hugeicons/core-free-icons";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import { Textarea } from "@/components/ui/textarea";
 import type {
   RankedInterpretation,
   RankingResult,
@@ -18,10 +22,19 @@ import { percentage, pointDelta, SIGNAL_META } from "./model";
 export function EvidencePanel({
   result,
   selected,
+  canSaveOutcome,
+  outcomeStatus,
+  onOutcome,
 }: {
   result: RankingResult;
   selected: RankedInterpretation;
+  canSaveOutcome: boolean;
+  outcomeStatus: string;
+  onOutcome: (decision: "accepted" | "corrected", correction?: string) => void;
 }) {
+  const [isCorrecting, setIsCorrecting] = useState(false);
+  const [correction, setCorrection] = useState("");
+
   return (
     <aside className="space-y-3 xl:sticky xl:top-[88px] xl:self-start">
       <Card className="gap-0 overflow-hidden rounded-2xl py-0 shadow-sm">
@@ -62,8 +75,7 @@ export function EvidencePanel({
               <HugeiconsIcon icon={Alert02Icon} className="size-4" strokeWidth={2} />
               <AlertTitle className="text-xs font-semibold">Ask before acting</AlertTitle>
               <AlertDescription className="text-[11px] leading-4 text-amber-900/80">
-                {result.uncertaintyReason} Ask: “Should this be a reusable live view or a report
-                delivered each Monday?”
+                {result.uncertaintyReason} Ask: “{result.clarificationQuestion}”
               </AlertDescription>
             </Alert>
           )}
@@ -90,6 +102,58 @@ export function EvidencePanel({
           )}
 
           <Separator />
+
+          {canSaveOutcome && (
+            <div>
+              <h3 className="text-xs font-semibold">Save this decision</h3>
+              <div className="mt-2 grid grid-cols-1 gap-2">
+                <Button className="w-full" size="sm" onClick={() => onOutcome("accepted")}>
+                  Accept interpretation
+                </Button>
+                <Button
+                  className="w-full"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setIsCorrecting(true)}
+                >
+                  Correct interpretation
+                </Button>
+              </div>
+              {isCorrecting && (
+                <div className="mt-3 space-y-2 rounded-xl border bg-muted/25 p-3">
+                  <label htmlFor="actual-intended-task" className="text-[11px] font-semibold">
+                    Actual intended task
+                  </label>
+                  <Textarea
+                    id="actual-intended-task"
+                    value={correction}
+                    onChange={(event) => setCorrection(event.target.value)}
+                    placeholder="Describe what should have been selected"
+                    className="min-h-20 text-xs"
+                  />
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      disabled={!correction.trim()}
+                      onClick={() => onOutcome("corrected", correction.trim())}
+                    >
+                      Save correction
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setIsCorrecting(false)}>
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
+              {outcomeStatus && (
+                <p role="status" className="mt-2 text-[10px] text-muted-foreground">
+                  {outcomeStatus}
+                </p>
+              )}
+            </div>
+          )}
+
+          {canSaveOutcome && <Separator />}
 
           <div>
             <h3 className="text-xs font-semibold">Why #{selected.rank}</h3>

@@ -10,6 +10,7 @@ import type {
   SignalKey,
   SignalWeights,
 } from "@/lib/ranking/types";
+import { DEVICE_ID_HEADER, getOrCreateDeviceId } from "@/lib/persistence/device";
 
 export const SIGNAL_META: Record<
   SignalKey,
@@ -95,7 +96,10 @@ export async function requestRanking(
 ): Promise<RankSuccessResponse> {
   const response = await fetch("/api/rank", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      [DEVICE_ID_HEADER]: getOrCreateDeviceId(),
+    },
     body: JSON.stringify({ provider, conversation, weights, previousInput }),
     signal,
   });

@@ -170,6 +170,111 @@ describe("normalizeProviderAnalysis", () => {
     );
   });
 
+  it("keeps similarly worded candidates when their canonical features conflict", () => {
+    const result = normalizeProviderAnalysis(
+      {
+        ...validAnalysis,
+        interpretations: [
+          {
+            id: "brief-email",
+            title: "Send a concise customer update email",
+            summary: "Send the customer a concise update email about the current work.",
+            semanticTerms: ["customer update", "concise email", "current work"],
+            features: ["format:email", "detail:concise"],
+          },
+          {
+            id: "detailed-email",
+            title: "Send a detailed customer update email",
+            summary: "Send the customer a detailed update email about the current work.",
+            semanticTerms: ["customer update", "detailed email", "current work"],
+            features: ["format:email", "detail:detailed"],
+          },
+          validAnalysis.interpretations[2],
+        ],
+        constraints: [],
+      },
+      log,
+    );
+
+    expect(result.interpretations).toHaveLength(3);
+    expect(result.interpretations.map((candidate) => candidate.id)).toEqual([
+      "send-a-concise-customer-update-email",
+      "send-a-detailed-customer-update-email",
+      "dashboard",
+    ]);
+  });
+
+  it("keeps identically titled candidates when their canonical decisions conflict", () => {
+    const result = normalizeProviderAnalysis(
+      {
+        ...validAnalysis,
+        interpretations: [
+          { ...validAnalysis.interpretations[0], title: "Customer update", features: ["detail:concise"] },
+          { ...validAnalysis.interpretations[1], title: "Customer update", features: ["detail:detailed"] },
+          validAnalysis.interpretations[2],
+        ],
+        constraints: [],
+      },
+      log,
+    );
+
+    expect(result.interpretations).toHaveLength(3);
+  });
+
+  it("does not ground provider constraints in assistant-authored text", () => {
+    const authoredLog: ConversationLog = {
+      ...log,
+      messages: log.messages.map((message, index) => ({
+        ...message,
+        author: index === 0 ? "assistant" : "user",
+      })),
+    };
+
+    expect(() =>
+      normalizeProviderAnalysis(
+        {
+          ...validAnalysis,
+          constraints: [{
+            ...validAnalysis.constraints[0],
+            phrases: ["produce slides"],
+            value: "slides",
+            label: "Produce slides",
+          }],
+        },
+        authoredLog,
+      ),
+    ).toThrow(/not grounded/i);
+  });
+
+  it("merges proposal paraphrases before enforcing the distinct-candidate contract", () => {
+    expect(() =>
+      normalizeProviderAnalysis(
+        {
+          ...validAnalysis,
+          interpretations: [
+            {
+              id: "proposal-only",
+              title: "Proposal only",
+              summary: "Deliver the rate-limiting implementation proposal without dashboard work.",
+              semanticTerms: ["rate limiting", "proposal", "implementation"],
+              features: ["deliverable:proposal", "dashboard:excluded"],
+            },
+            {
+              id: "combined-proposal",
+              title: "Combined concise implementation proposal",
+              summary: "Deliver one concise rate-limiting implementation proposal; leave the dashboard out.",
+              semanticTerms: ["rate limiting", "concise proposal", "implementation"],
+              features: ["deliverable:proposal", "dashboard:excluded", "detail:concise"],
+            },
+            validAnalysis.interpretations[2],
+          ],
+          constraints: [],
+        },
+        log,
+      ),
+    ).toThrow(/three genuinely distinct interpretations/);
+  });
+
   it("rejects contradictory constraint claims from one provider response", () => {
     expect(() =>
       normalizeProviderAnalysis(

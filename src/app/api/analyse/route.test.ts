@@ -8,11 +8,13 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { analyseWithCodex } = vi.hoisted(() => ({
+const { analyseWithCodex, analyseWithOpenAICompatible } = vi.hoisted(() => ({
   analyseWithCodex: vi.fn(),
+  analyseWithOpenAICompatible: vi.fn(),
 }));
 
 vi.mock("@/lib/providers/codex-exec", () => ({ analyseWithCodex }));
+vi.mock("@/lib/providers/openai-compatible", () => ({ analyseWithOpenAICompatible }));
 
 import { POST } from "./route";
 
@@ -28,6 +30,7 @@ function createRequest(body: unknown): Request {
 describe("POST /api/analyse", () => {
   beforeEach(() => {
     analyseWithCodex.mockReset();
+    analyseWithOpenAICompatible.mockReset();
   });
 
   it("returns a concise validation error without echoing rejected input", async () => {

@@ -7,6 +7,7 @@
 
 import type {
   ConstraintRule,
+  ConversationTransition,
   ConversationMessage,
   ExtractedConstraint,
   ReframeEvent,
@@ -97,21 +98,65 @@ function isCompleteTaskSwitch(text: string): boolean {
   });
 }
 
+const nonUserAuthorPattern = /^(?:assistant|system|tool|developer|agent|bot|ai)$/i;
+
+/**
+ * Uses explicit participant metadata when available while preserving the
+ * documented role-less import fallback. Arbitrary human names remain usable.
+ */
+export function selectUserInstructionMessages(
+  messages: ConversationMessage[],
+): ConversationMessage[] {
+  return messages.filter(
+    (message) => !message.author || !nonUserAuthorPattern.test(message.author.trim()),
+  );
+}
+
+/** Classifies conversational state without treating questions as new scope. */
+export function classifyConversationTransitions(
+  messages: ConversationMessage[],
+  taskBoundaries: TaskBoundary[] = [],
+): ConversationTransition[] {
+  const boundaryIds = new Set(taskBoundaries.map((boundary) => boundary.messageId));
+  return selectUserInstructionMessages(messages).flatMap((message) => {
+    const text = normaliseText(message.text);
+    let kind: ConversationTransition["kind"] | undefined;
+    if (boundaryIds.has(message.id) || isCompleteTaskSwitch(message.text)) {
+      kind = "replacement";
+    } else if (/(?:resume|continue|back to|return to|just get|go ahead|proceed).*(?:done|proposal|task|work)?/.test(text)) {
+      kind = "resumption";
+    } else if (/\?\s*$/.test(message.text.trim()) || /^(?:could|would|should|can|is|are|what|which|how|why|when|where)\b/.test(text)) {
+      kind = "question";
+    } else if (/(?:\bdefer\b|\bdeferred\b|\bhold off\b|\blater\b|\bnot now\b|\bno [a-z0-9-]+ yet\b)/.test(text)) {
+      kind = "deferral";
+    }
+    return kind
+      ? [{ messageId: message.id, kind, summary: `${message.id} is a ${kind}.` }]
+      : [];
+  });
+}
+
 /** Returns only messages belonging to the current task for intent-based scoring. */
 export function selectActiveTaskMessages(
   messages: ConversationMessage[],
   taskBoundaries: TaskBoundary[] = [],
 ): ConversationMessage[] {
+  const instructionMessages = selectUserInstructionMessages(messages);
   const boundaryMessageIds = new Set(taskBoundaries.map((boundary) => boundary.messageId));
   let activeTaskStart = 0;
 
-  messages.forEach((message, index) => {
+  instructionMessages.forEach((message, index) => {
     if (boundaryMessageIds.has(message.id) || isCompleteTaskSwitch(message.text)) {
       activeTaskStart = index;
     }
   });
 
-  return messages.slice(activeTaskStart);
+  return instructionMessages.slice(activeTaskStart).filter((message) => {
+    const text = normaliseText(message.text);
+    const question = /\?\s*$/.test(message.text.trim());
+    const refersToDeferredWork = /\b(?:defer|deferred|later|not now|no [a-z0-9-]+ yet)\b/.test(text);
+    return !(question && refersToDeferredWork);
+  });
 }
 
 /** Removes extraction-only ordering data before a constraint enters the audit model. */
@@ -168,7 +213,7 @@ export function extractConstraints(
     taskBoundaries.map((boundary) => [boundary.messageId, boundary.reason]),
   );
 
-  messages.forEach((message, messageIndex) => {
+  selectUserInstructionMessages(messages).forEach((message, messageIndex) => {
     const extracted: MatchedConstraint[] = rules
       .flatMap((rule) => {
         const match = findBestPhrase(message.text, rule);

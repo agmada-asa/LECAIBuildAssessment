@@ -82,7 +82,7 @@ function InterpretationCard({
                 </p>
               )}
               <p className="text-[9px] font-semibold tracking-wider text-muted-foreground uppercase">
-                confidence
+                relative confidence
               </p>
             </div>
           </div>

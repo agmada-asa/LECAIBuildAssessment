@@ -2,14 +2,29 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { analyseWithCodex, getProviderStatuses } = vi.hoisted(() => ({
+const {
+  analyseWithCodex,
+  analyseWithOpenAICompatible,
+  createSQLiteRepository,
+  getProviderStatuses,
+} = vi.hoisted(() => ({
   analyseWithCodex: vi.fn(),
+  analyseWithOpenAICompatible: vi.fn(),
+  createSQLiteRepository: vi.fn(),
   getProviderStatuses: vi.fn(),
 }));
 
 vi.mock("@/lib/providers/codex-exec", () => ({
   analyseWithCodex,
   getProviderStatuses,
+}));
+
+vi.mock("@/lib/providers/openai-compatible", () => ({
+  analyseWithOpenAICompatible,
+}));
+
+vi.mock("@/lib/persistence/sqlite", () => ({
+  createSQLiteRepository,
 }));
 
 import { POST } from "./route";
@@ -25,6 +40,11 @@ const conversation = {
     },
     {
       id: "M2",
+      text: "Book the dentist appointment for next Tuesday.",
+      timestamp: "2026-08-14T08:00:30.000Z",
+    },
+    {
+      id: "M3",
       text: "No slides. Send the raw rows as CSV.",
       timestamp: "2026-08-14T08:01:00.000Z",
     },
@@ -43,6 +63,9 @@ function request(body: unknown): Request {
 describe("POST /api/rank", () => {
   beforeEach(() => {
     analyseWithCodex.mockReset();
+    analyseWithOpenAICompatible.mockReset();
+    createSQLiteRepository.mockReset();
+    createSQLiteRepository.mockReturnValue({});
     getProviderStatuses.mockReset();
   });
 
@@ -58,18 +81,30 @@ describe("POST /api/rank", () => {
     expect(body.result.ranking[0]).toHaveProperty("previous.signals.semantic");
     expect(body.result.ranking[0]).toHaveProperty("deltas.confidence");
     expect(body.result.ranking[0]).toHaveProperty("deltas.rank");
-    expect(body.result.ranking[0]).toHaveProperty("change.messageId", "M2");
+    expect(body.result.ranking[0]).toHaveProperty("change.messageId", "M3");
     expect(
       new Set(body.result.constraints.map((item: { messageId: string }) => item.messageId)),
-    ).toEqual(new Set(["M1", "M2"]));
+    ).toEqual(new Set(["M1", "M3"]));
     expect(body.result.activeConstraints).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ dimension: "format", value: "csv", messageId: "M2" }),
+        expect.objectContaining({ dimension: "format", value: "csv", messageId: "M3" }),
       ]),
     );
-    expect(body.result.rankingChange).toMatchObject({ messageId: "M2" });
+    expect(body.result.rankingChange).toMatchObject({ messageId: "M3" });
     expect(body.result.mostInfluentialAxis).toMatchObject({ key: "constraints" });
-    expect(body.result.processedMessageCount).toBe(2);
+    expect(body.result.processedMessageCount).toBe(3);
+  });
+
+  it("keeps ranking available when a request has no device identifier", async () => {
+    const response = await POST(request({ provider: "demo", conversation }));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.result.ranking).toHaveLength(3);
+    expect(body.persistence).toMatchObject({
+      enabled: true,
+      identified: false,
+    });
   });
 
   it("uses the prior run's candidate catalogue for follow-up movement", async () => {
@@ -127,11 +162,16 @@ describe("POST /api/rank", () => {
       messages: [
         {
           id: "M1",
-          text: "No slides; send a dashboard link.",
+          text: "Book the dentist appointment for next Tuesday.",
           timestamp: "2026-08-14T08:00:00.000Z",
         },
         {
           id: "M2",
+          text: "No slides; send a dashboard link.",
+          timestamp: "2026-08-14T08:00:30.000Z",
+        },
+        {
+          id: "M3",
           text: "Make it PowerPoint after all.",
           timestamp: "2026-08-14T08:01:00.000Z",
         },
@@ -157,6 +197,52 @@ describe("POST /api/rank", () => {
     );
   });
 
+  it("returns a structured refusal when deterministic candidate generation is ungrounded", async () => {
+    const sparseConversation = {
+      ...conversation,
+      messages: [conversation.messages[0]],
+    };
+
+    const response = await POST(
+      request({ provider: "demo", conversation: sparseConversation }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(422);
+    expect(body.error.code).toBe("candidate_generation_unavailable");
+    expect(body.error.message).toMatch(/three distinct tasks/i);
+  });
+
+  it("keeps the resumed rate-limiting proposal ahead of deferred dashboard and MCP work", async () => {
+    const financeConversation = {
+      ...conversation,
+      conversationId: "finance-follow-up",
+      messages: [
+        "We eventually need a finance monitoring dashboard.",
+        "First assess rate limiting for the ingestion service.",
+        "Write one concise implementation proposal for rate limiting.",
+        "No dashboard yet; defer that work until the proposal is approved.",
+        "Include rollout, retry budgets, and ownership in the proposal.",
+        "For the deferred dashboard, could MCP help later?",
+        "No MCP now, just get the proposal done.",
+      ].map((text, index) => ({
+        id: `M${index + 1}`,
+        text,
+        timestamp: `2026-08-14T08:0${index}:00.000Z`,
+      })),
+    };
+
+    const response = await POST(
+      request({ provider: "demo", conversation: financeConversation }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.result.ranking[0].title).toMatch(/implementation proposal/i);
+    expect(body.result.uncertain).toBe(false);
+    expect(body.result.clarificationQuestion).toBeUndefined();
+  });
+
   it("returns structured, actionable validation errors", async () => {
     const response = await POST(
       request({ provider: "demo", conversation: { ...conversation, messages: [] } }),
@@ -178,6 +264,131 @@ describe("POST /api/rank", () => {
 
     expect(response.status).toBe(503);
     expect(body.error.code).toBe("provider_unavailable");
+    expect(analyseWithCodex).not.toHaveBeenCalled();
+  });
+
+  it("preserves participant roles when sending a conversation to a live provider", async () => {
+    getProviderStatuses.mockResolvedValue([
+      { id: "codex", name: "Codex CLI", available: true },
+    ]);
+    analyseWithCodex.mockResolvedValue({
+      interpretations: [
+        {
+          id: "incident-report",
+          title: "Prepare the incident report",
+          summary: "Document the production incident for the on-call handoff.",
+          semanticTerms: ["incident report", "on-call", "handoff"],
+          features: ["artifact:incident-report"],
+        },
+        {
+          id: "hotfix-plan",
+          title: "Plan the immediate hotfix",
+          summary: "Describe the smallest safe repair for the production crash.",
+          semanticTerms: ["immediate hotfix", "production crash", "repair"],
+          features: ["artifact:hotfix-plan"],
+        },
+        {
+          id: "redesign-plan",
+          title: "Plan the session-state redesign",
+          summary: "Describe the longer-term redesign and regression coverage.",
+          semanticTerms: ["session state", "redesign", "regression tests"],
+          features: ["artifact:redesign-plan"],
+        },
+      ],
+      constraints: [],
+      taskBoundaries: [],
+      notes: "Only user-authored messages supplied task instructions.",
+    });
+    const authoredConversation = {
+      ...conversation,
+      conversationId: "authored-crash-report",
+      messages: [
+        {
+          id: "CRASH-101",
+          author: "user",
+          text: "The iOS app started crashing after version 7.4 shipped.",
+          timestamp: "2026-08-14T08:00:00.000Z",
+        },
+        {
+          id: "CRASH-102",
+          author: "assistant",
+          text: "Do we have a symbolicated stack trace?",
+          timestamp: "2026-08-14T08:01:00.000Z",
+        },
+        {
+          id: "CRASH-103",
+          author: "user",
+          text: "Prepare an incident report and separate the hotfix from the redesign.",
+          timestamp: "2026-08-14T08:02:00.000Z",
+        },
+      ],
+    };
+
+    const response = await POST(
+      request({ provider: "codex", conversation: authoredConversation }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(analyseWithCodex).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "[CRASH-101] (author=user; timestamp=2026-08-14T08:00:00.000Z):",
+      ),
+      undefined,
+    );
+    expect(analyseWithCodex.mock.calls[0][0]).toContain(
+      "[CRASH-102] (author=assistant; timestamp=2026-08-14T08:01:00.000Z):",
+    );
+  });
+
+  it("uses the configured OpenAI-compatible provider instead of the removed Ollama path", async () => {
+    getProviderStatuses.mockResolvedValue([
+      { id: "api", name: "OpenAI-compatible API", available: true },
+    ]);
+    analyseWithOpenAICompatible.mockResolvedValue({
+      interpretations: [
+        {
+          id: "slides",
+          title: "Prepare slides",
+          summary: "Create a visual presentation.",
+          semanticTerms: ["slides", "presentation", "visual"],
+          features: ["format:slides"],
+        },
+        {
+          id: "csv",
+          title: "Export CSV",
+          summary: "Send machine-readable rows.",
+          semanticTerms: ["CSV", "raw rows", "export"],
+          features: ["format:csv"],
+        },
+        {
+          id: "dashboard",
+          title: "Build a dashboard",
+          summary: "Publish an interactive view.",
+          semanticTerms: ["dashboard", "interactive", "view"],
+          features: ["format:dashboard"],
+        },
+      ],
+      constraints: [
+        {
+          id: "csv-required",
+          phrases: ["CSV"],
+          dimension: "format",
+          value: "csv",
+          mode: "require",
+          strength: 1,
+          label: "Send CSV",
+        },
+      ],
+      taskBoundaries: [],
+      notes: "API-generated alternatives.",
+    });
+
+    const response = await POST(request({ provider: "api", conversation }));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.provider).toMatchObject({ id: "api", fallback: false });
+    expect(analyseWithOpenAICompatible).toHaveBeenCalledTimes(1);
     expect(analyseWithCodex).not.toHaveBeenCalled();
   });
 
@@ -302,7 +513,7 @@ describe("POST /api/rank", () => {
     expect(body).not.toContain("secret");
   });
 
-  it("returns a structured error for malformed provider output", async () => {
+  it("returns a structured error when corrective normalization still fails", async () => {
     getProviderStatuses.mockResolvedValue([
       { id: "codex", name: "Codex CLI", available: true },
     ]);
@@ -313,6 +524,67 @@ describe("POST /api/rank", () => {
 
     expect(response.status).toBe(502);
     expect(body.error.code).toBe("invalid_provider_output");
-    expect(analyseWithCodex).toHaveBeenCalledTimes(1);
+    expect(analyseWithCodex).toHaveBeenCalledTimes(2);
+    expect(body.error.message).toMatch(/corrective retry/i);
+  });
+
+  it("corrects a schema-valid provider response rejected by normalization", async () => {
+    getProviderStatuses.mockResolvedValue([
+      { id: "codex", name: "Codex CLI", available: true },
+    ]);
+    const repeatedInterpretation = {
+      id: "slides",
+      title: "Prepare slides",
+      summary: "Create a visual presentation.",
+      semanticTerms: ["slides", "presentation", "visual"],
+      features: ["format:slides"],
+    };
+    analyseWithCodex
+      .mockResolvedValueOnce({
+        interpretations: [
+          repeatedInterpretation,
+          { ...repeatedInterpretation, id: "slides-copy" },
+          {
+            id: "csv",
+            title: "Export CSV",
+            summary: "Send machine-readable rows.",
+            semanticTerms: ["CSV", "raw rows", "export"],
+            features: ["format:csv"],
+          },
+        ],
+        constraints: [],
+        taskBoundaries: [],
+        notes: "The first attempt repeated one alternative.",
+      })
+      .mockResolvedValueOnce({
+        interpretations: [
+          repeatedInterpretation,
+          {
+            id: "csv",
+            title: "Export CSV",
+            summary: "Send machine-readable rows.",
+            semanticTerms: ["CSV", "raw rows", "export"],
+            features: ["format:csv"],
+          },
+          {
+            id: "dashboard",
+            title: "Build a dashboard",
+            summary: "Publish an interactive view.",
+            semanticTerms: ["dashboard", "interactive", "view"],
+            features: ["format:dashboard"],
+          },
+        ],
+        constraints: [],
+        taskBoundaries: [],
+        notes: "The corrected attempt contains three alternatives.",
+      });
+
+    const response = await POST(request({ provider: "codex", conversation }));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.input.interpretations).toHaveLength(3);
+    expect(analyseWithCodex).toHaveBeenCalledTimes(2);
+    expect(analyseWithCodex.mock.calls[1][1]).toMatch(/previous response/i);
   });
 });

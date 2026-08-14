@@ -21,6 +21,7 @@ import { ConversationPanel } from "./intent-ranker/conversation-panel";
 import { EvidencePanel } from "./intent-ranker/evidence-panel";
 import { ConversationImportDialog } from "./intent-ranker/import-dialog";
 import { RankingPanel } from "./intent-ranker/ranking-panel";
+import { QueueDialog } from "./intent-ranker/queue-dialog";
 import { ProviderSettings, WeightSettings } from "./intent-ranker/settings-dialogs";
 import { useIntentRanker } from "./intent-ranker/use-intent-ranker";
 
@@ -65,6 +66,7 @@ export function IntentRanker() {
             </Select>
 
             <div className="ml-auto flex items-center gap-2">
+              <QueueDialog />
               <ConversationImportDialog
                 providers={workbench.providers}
                 provider={workbench.selectedProvider}
@@ -86,7 +88,10 @@ export function IntentRanker() {
           </div>
         </header>
 
-        <main className="workspace-grid min-h-[calc(100vh-64px)]">
+        <main
+          aria-busy={workbench.isImporting}
+          className="workspace-grid min-h-[calc(100vh-64px)]"
+        >
           <div className="mx-auto max-w-[1720px] px-4 py-5 sm:px-6">
             <div className="mb-5">
               <h1 className="font-heading text-xl font-semibold tracking-tight sm:text-2xl">
@@ -100,6 +105,14 @@ export function IntentRanker() {
               <Badge variant="outline" className="mt-2 rounded-full text-[10px]">
                 Analyzed by {workbench.analysisSource?.name ?? "Deterministic fixture"}
               </Badge>
+              {workbench.persistence?.state && (
+                <Badge variant="outline" className="mt-2 ml-2 rounded-full text-[10px]">
+                  State: {workbench.persistence.state.replace("_", " ")}
+                </Badge>
+              )}
+              <Badge variant="outline" className="mt-2 ml-2 rounded-full text-[10px]">
+                {workbench.result.semanticModel.name}@{workbench.result.semanticModel.revision}
+              </Badge>
             </div>
 
             {workbench.analysisError && (
@@ -110,6 +123,25 @@ export function IntentRanker() {
               </Alert>
             )}
 
+            {workbench.isImporting ? (
+              <section
+                role="status"
+                aria-label="Analysis in progress"
+                aria-live="polite"
+                className="flex min-h-[420px] flex-col items-center justify-center rounded-2xl border bg-card px-6 text-center shadow-sm"
+              >
+                <div className="size-10 animate-spin rounded-full border-2 border-muted border-t-primary" />
+                <h2 className="mt-5 font-heading text-base font-semibold">
+                  Analyzing conversation…
+                </h2>
+                <p className="mt-2 max-w-sm text-xs leading-5 text-muted-foreground">
+                  The ranking and supporting evidence will appear here when the analysis is ready.
+                </p>
+                <div className="mt-5 h-1.5 w-full max-w-xs overflow-hidden rounded-full bg-muted">
+                  <div className="h-full w-1/3 animate-pulse rounded-full bg-primary" />
+                </div>
+              </section>
+            ) : (
             <div className="grid items-start gap-5 xl:grid-cols-[330px_minmax(460px,1fr)_320px] 2xl:grid-cols-[360px_minmax(560px,1fr)_350px]">
               <ConversationPanel
                 messages={workbench.messages}
@@ -132,8 +164,18 @@ export function IntentRanker() {
                 selectedId={workbench.selected.id}
                 onSelect={workbench.setSelectedId}
               />
-              <EvidencePanel result={workbench.result} selected={workbench.selected} />
+              <EvidencePanel
+                result={workbench.result}
+                selected={workbench.selected}
+                canSaveOutcome={Boolean(
+                  workbench.persistence?.identified &&
+                    workbench.persistence.rankingRunId,
+                )}
+                outcomeStatus={workbench.outcomeStatus}
+                onOutcome={workbench.handleOutcome}
+              />
             </div>
+            )}
           </div>
         </main>
       </div>
