@@ -6,6 +6,9 @@
  */
 
 import { extractConstraints, selectActiveTaskMessages } from "./constraints";
+import { embeddingProvider } from "@/lib/embeddings/provider";
+import { cosineSimilarity } from "@/lib/embeddings/similarity";
+import type { EmbeddingProvider } from "@/lib/embeddings/types";
 import { normaliseText, tokenOverlap } from "./text";
 import type {
   ConversationMessage,
@@ -40,66 +43,114 @@ function containsNegatedPhrase(message: string, phrase: string): boolean {
     `not ${target}`,
     `no ${target}`,
     `without ${target}`,
+    `avoid ${target}`,
+    `never ${target}`,
+    `do not ${target}`,
+    `dont ${target}`,
   ].some((pattern) => text.includes(pattern));
 }
 
+/** A negated canonical term invalidates this message as support for the candidate. */
+function explicitlyProhibitsInterpretation(
+  message: string,
+  interpretation: Interpretation,
+): boolean {
+  const featureValues = interpretation.features
+    .map((feature) => feature.split(":", 2)[1])
+    .filter((value) => !["required", "excluded", "none"].includes(value));
+  return [...interpretation.semanticTerms, ...featureValues].some((term) =>
+    containsNegatedPhrase(message, term.replace(/-/g, " ")),
+  );
+}
+
 /** Calculates inspectable lexical similarity and source-grounded evidence. */
-function semanticScore(
+export const SEMANTIC_RECENCY_DECAY = 0.5;
+export const SOFTMAX_TEMPERATURE = 0.17;
+
+/** Calculates embedding cosine similarity with a visible lexical hybrid signal. */
+export function semanticScore(
   interpretation: Interpretation,
   messages: ConversationMessage[],
+  embeddings: EmbeddingProvider = embeddingProvider,
 ): { score: number; evidence: Evidence[] } {
-  const evidence: Evidence[] = [];
-  const weightedMatches: number[] = [];
-
-  interpretation.semanticTerms.forEach((term) => {
-    let bestMatch = 0;
-    let bestMessage: ConversationMessage | undefined;
-
-    messages.forEach((message, index) => {
-      const age = messages.length - 1 - index;
-      const recency = Math.pow(0.76, age);
-      const normalisedMessage = normaliseText(message.text);
-      const normalisedTerm = normaliseText(term);
-      const match = normalisedMessage.includes(normalisedTerm)
-        ? containsNegatedPhrase(message.text, term)
-          ? 0
-          : 1
-        : tokenOverlap(message.text, term) * 0.62;
-
-      if (match * recency > bestMatch) {
-        bestMatch = match * recency;
-        bestMessage = message;
-      }
-    });
-
-    weightedMatches.push(bestMatch);
-    if (bestMatch >= 0.45 && bestMessage) {
-      evidence.push({
-        messageId: bestMessage.id,
-        text: `“${term}” aligns with this interpretation`,
-        kind: "semantic",
-        sentiment: "supports",
-      });
-    }
-  });
-
-  const strongest = weightedMatches.sort((a, b) => b - a).slice(0, 4);
-  const coverage =
-    strongest.reduce((total, value) => total + value, 0) /
-    Math.max(4, strongest.length);
-  const descriptionOverlap = tokenOverlap(
-    messages.map((message) => message.text).join(" "),
-    `${interpretation.title} ${interpretation.summary}`,
+  if (!messages.length) return { score: 0, evidence: [] };
+  const candidateText = [
+    interpretation.title,
+    interpretation.summary,
+    ...interpretation.semanticTerms,
+  ].join(". ");
+  const semanticMessages = messages.map((message) =>
+    explicitlyProhibitsInterpretation(message.text, interpretation) ? "" : message.text,
   );
+  const [candidateVector, ...messageVectors] = embeddings.embed([
+    candidateText,
+    ...semanticMessages,
+  ]);
+  const matches = messages.map((message, index) => {
+    const age = messages.length - 1 - index;
+    const recency = Math.pow(SEMANTIC_RECENCY_DECAY, age);
+    const sourceText = semanticMessages[index];
+    const embedding = sourceText
+      ? cosineSimilarity(candidateVector, messageVectors[index])
+      : 0;
+    const lexical = sourceText ? Math.max(
+      tokenOverlap(sourceText, candidateText),
+      ...interpretation.semanticTerms.map((term) =>
+        containsNegatedPhrase(sourceText, term)
+          ? 0
+          : normaliseText(sourceText).includes(normaliseText(term))
+            ? 1
+            : tokenOverlap(sourceText, term),
+      ),
+    ) : 0;
+    return { message, recency, embedding, lexical };
+  });
+  const closest = [...matches].sort(
+    (left, right) =>
+      right.embedding * right.recency - left.embedding * left.recency,
+  )[0];
+  const totalRecency = matches.reduce((total, match) => total + match.recency, 0);
+  const embeddingAverage = matches.reduce(
+    (total, match) => total + match.embedding * match.recency,
+    0,
+  ) / totalRecency;
+  const lexicalBest = Math.max(...matches.map((match) => match.lexical * match.recency));
+  const evidence: Evidence[] = [];
+
+  if (closest.embedding >= 0.08) {
+    evidence.push({
+      messageId: closest.message.id,
+      text: `Closest message by ${embeddings.model.name}: “${closest.message.text}”`,
+      kind: "semantic",
+      sentiment: "supports",
+      source: "embedding",
+      similarity: round(closest.embedding),
+    });
+  }
+  if (lexicalBest >= 0.45) {
+    const lexicalMessage = [...matches].sort(
+      (left, right) => right.lexical * right.recency - left.lexical * left.recency,
+    )[0];
+    evidence.push({
+      messageId: lexicalMessage.message.id,
+      text: "Inspectable phrase overlap supports this interpretation",
+      kind: "semantic",
+      sentiment: "supports",
+      source: "lexical",
+      similarity: round(lexicalMessage.lexical),
+    });
+  }
 
   return {
-    score: round(clamp(0.12 + coverage * 0.76 + descriptionOverlap * 0.2)),
-    evidence: evidence.slice(0, 2),
+    score: round(
+      clamp(0.08 + embeddingAverage * 0.68 + closest.embedding * closest.recency * 0.16 + lexicalBest * 0.16),
+    ),
+    evidence,
   };
 }
 
 /** Scores agreement with active constraints and records matches and conflicts. */
-function constraintScore(
+export function constraintScore(
   interpretation: Interpretation,
   constraints: ExtractedConstraint[],
 ): { score: number; evidence: Evidence[] } {
@@ -115,9 +166,13 @@ function constraintScore(
   active.forEach((constraint) => {
     const exactFeature = `${constraint.dimension}:${constraint.value}`;
     const hasExactFeature = interpretation.features.includes(exactFeature);
-    const hasOtherValueInDimension = interpretation.features.some((feature) =>
-      feature.startsWith(`${constraint.dimension}:`),
-    );
+    const hasOtherValueInDimension = interpretation.features.some((feature) => {
+      const [dimension, value] = feature.split(":", 2);
+      return (
+        dimension === constraint.dimension &&
+        !["unspecified", "unknown"].includes(value)
+      );
+    });
     const consistency =
       constraint.mode === "require"
         ? hasExactFeature
@@ -127,7 +182,9 @@ function constraintScore(
             : 0.46
         : hasExactFeature
           ? 0
-          : 0.94;
+          : hasOtherValueInDimension
+            ? 0.94
+            : 0.5;
 
     weightedTotal += consistency * constraint.strength;
     totalStrength += constraint.strength;
@@ -138,6 +195,7 @@ function constraintScore(
         text: constraint.label,
         kind: "constraints",
         sentiment: "supports",
+        source: "constraint",
       });
     } else if (consistency <= 0.15) {
       evidence.push({
@@ -145,6 +203,7 @@ function constraintScore(
         text: constraint.label,
         kind: "constraints",
         sentiment: "conflicts",
+        source: "constraint",
       });
     }
   });
@@ -156,26 +215,32 @@ function constraintScore(
 }
 
 /** Scores similarity to previously accepted outcomes for the same candidate. */
-function historicalScore(
+export function historicalScore(
   interpretation: Interpretation,
   messages: ConversationMessage[],
   history: HistoricalTask[],
+  embeddings: EmbeddingProvider = embeddingProvider,
 ): { score: number; evidence: Evidence[] } {
   const conversation = messages.map((message) => message.text).join(" ");
-  const matchingHistory = history.filter(
-    (task) => task.accepted && task.interpretationId === interpretation.id,
-  );
+  const matchingHistory = history.filter((task) => task.accepted);
 
   if (!matchingHistory.length) return { score: 0.45, evidence: [] };
 
+  const candidateText = `${interpretation.title}. ${interpretation.summary}. ${interpretation.semanticTerms.join(". ")}`;
+  const [candidateVector, conversationVector, ...historyVectors] = embeddings.embed([
+    candidateText,
+    conversation,
+    ...matchingHistory.map((task) => `${task.summary}. ${task.terms.join(". ")}`),
+  ]);
   const best = matchingHistory
-    .map((task) => {
-      const phraseCoverage =
-        task.terms.filter((term) => normaliseText(conversation).includes(normaliseText(term)))
-          .length / Math.max(task.terms.length, 1);
+    .map((task, index) => {
+      const candidateSimilarity = cosineSimilarity(candidateVector, historyVectors[index]);
+      const conversationSimilarity = cosineSimilarity(conversationVector, historyVectors[index]);
+      const explicitMatch = task.interpretationId === interpretation.id ? 0.08 : 0;
       return {
         task,
-        score: clamp(0.2 + phraseCoverage * 0.62 + tokenOverlap(conversation, task.summary) * 0.24),
+        similarity: clamp(candidateSimilarity * 0.7 + conversationSimilarity * 0.3 + explicitMatch),
+        score: clamp(0.2 + candidateSimilarity * 0.55 + conversationSimilarity * 0.25 + explicitMatch),
       };
     })
     .sort((left, right) => right.score - left.score)[0];
@@ -189,6 +254,9 @@ function historicalScore(
               text: `Similar accepted task: “${best.task.summary}”`,
               kind: "history",
               sentiment: "supports",
+              source: "history",
+              similarity: round(best.similarity),
+              provenanceId: best.task.id,
             },
           ]
         : [],
@@ -213,7 +281,7 @@ export function normaliseWeights(weights: SignalWeights): SignalWeights {
 }
 
 /** Combines independent axes using the normalised policy weights. */
-function weightedTotal(scores: SignalScores, weights: SignalWeights): number {
+export function weightedTotal(scores: SignalScores, weights: SignalWeights): number {
   const normalised = normaliseWeights(weights);
   return round(
     scores.semantic * normalised.semantic +
@@ -223,7 +291,7 @@ function weightedTotal(scores: SignalScores, weights: SignalWeights): number {
 }
 
 /** Produces relative confidence values; these are not calibrated probabilities. */
-function softmax(values: number[], temperature = 0.17): number[] {
+export function softmax(values: number[], temperature = SOFTMAX_TEMPERATURE): number[] {
   const maximum = Math.max(...values);
   const exponentials = values.map((value) => Math.exp((value - maximum) / temperature));
   const total = exponentials.reduce((sum, value) => sum + value, 0);
@@ -242,6 +310,7 @@ export function rankSnapshot(
   input: RankingInput,
   messages: ConversationMessage[],
   weights: SignalWeights,
+  embeddings: EmbeddingProvider = embeddingProvider,
 ): RankingSnapshotResult {
   const { constraints, activeConstraints, reframes } = extractConstraints(
     messages,
@@ -250,9 +319,14 @@ export function rankSnapshot(
   );
   const activeTaskMessages = selectActiveTaskMessages(messages, input.taskBoundaries);
   const provisional = input.interpretations.map((interpretation) => {
-    const semantic = semanticScore(interpretation, activeTaskMessages);
+    const semantic = semanticScore(interpretation, activeTaskMessages, embeddings);
     const constraint = constraintScore(interpretation, constraints);
-    const historical = historicalScore(interpretation, activeTaskMessages, input.history);
+    const historical = historicalScore(
+      interpretation,
+      activeTaskMessages,
+      input.history,
+      embeddings,
+    );
     const signals: SignalScores = {
       semantic: semantic.score,
       constraints: constraint.score,
@@ -264,19 +338,32 @@ export function rankSnapshot(
       rank: 0,
       title: interpretation.title,
       summary: interpretation.summary,
+      features: interpretation.features,
+      semanticTerms: interpretation.semanticTerms,
       signals,
       total: weightedTotal(signals, weights),
       confidence: 0,
+      valid:
+        semantic.evidence.some(
+          (evidence) =>
+            evidence.source === "lexical" || (evidence.similarity ?? 0) >= 0.14,
+        ) ||
+        constraint.evidence.some((evidence) => evidence.sentiment === "supports") ||
+        historical.evidence.length > 0,
       evidence: [...constraint.evidence, ...semantic.evidence, ...historical.evidence],
       explanation: "",
     } satisfies RankedInterpretation;
   });
 
   provisional.sort((left, right) => right.total - left.total);
-  const confidences = softmax(provisional.map((item) => item.total));
+  const validItems = provisional.filter((item) => item.valid);
+  const confidences = validItems.length
+    ? softmax(validItems.map((item) => item.total))
+    : [];
   provisional.forEach((item, index) => {
     item.rank = index + 1;
-    item.confidence = confidences[index];
+    const validIndex = validItems.indexOf(item);
+    item.confidence = validIndex >= 0 ? confidences[validIndex] : 0;
   });
 
   return { ranking: provisional, constraints, activeConstraints, reframes };

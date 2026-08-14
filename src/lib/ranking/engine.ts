@@ -6,7 +6,11 @@
  * result contract and comparison between the current and previous runs.
  */
 
-import { extractConstraints } from "./constraints";
+import {
+  classifyConversationTransitions,
+  extractConstraints,
+  selectActiveTaskMessages,
+} from "./constraints";
 import {
   buildRankingChange,
   candidateExplanation,
@@ -14,9 +18,13 @@ import {
   evidenceKey,
   influentialAxis,
 } from "./explanations";
-import { rankSnapshot, round } from "./scoring";
+import { rankSnapshot, round, softmax, weightedTotal } from "./scoring";
+import { embeddingProvider } from "@/lib/embeddings/provider";
+import type { EmbeddingProvider, PreparableEmbeddingProvider } from "@/lib/embeddings/types";
+import { SEMANTIC_RECENCY_DECAY } from "./scoring";
 import type {
   ConversationMessage,
+  HumanReviewReason,
   RankedInterpretation,
   RankingInput,
   RankingResult,
@@ -25,6 +33,13 @@ import type {
 } from "./types";
 
 export { extractConstraints };
+
+/** Thresholds validated by the committed labelled evaluation set. */
+export const HUMAN_REVIEW_POLICY = {
+  minimumTotal: 0.52,
+  minimumRelativeConfidence: 0.55,
+  minimumTopTwoMargin: 0.12,
+} as const;
 
 /** Adds prior values, signed deltas, and evidence changes to matching candidates. */
 function compareCandidates(
@@ -86,20 +101,58 @@ function compareCandidates(
   });
 }
 
-/** Applies the stable confidence thresholds used by every provider. */
-function getUncertaintyReason(
+/** Applies independently testable confidence thresholds used by every provider. */
+export function evaluateHumanReview(
   ranking: RankedInterpretation[],
-): string | undefined {
+): HumanReviewReason | undefined {
+  if (!ranking.some((candidate) => candidate.valid !== false)) {
+    return {
+      code: "none_above",
+      message: "none of the proposed interpretations is grounded in the active task.",
+    };
+  }
   const top = ranking[0];
   const runnerUp = ranking[1];
   const margin = top.confidence - runnerUp.confidence;
 
-  if (top.total < 0.52) return "no interpretation has enough supporting evidence.";
-  if (top.confidence < 0.55) {
-    return "the leading interpretation does not clear 55% confidence.";
+  if (top.total < HUMAN_REVIEW_POLICY.minimumTotal) {
+    return {
+      code: "weak_evidence",
+      message: "no interpretation has enough supporting evidence.",
+    };
   }
-  if (margin < 0.12) {
-    return `the top two interpretations are only ${Math.round(margin * 100)} points apart.`;
+  if (top.confidence < HUMAN_REVIEW_POLICY.minimumRelativeConfidence) {
+    return {
+      code: "low_relative_confidence",
+      message: "the leading interpretation does not clear 55% relative confidence.",
+    };
+  }
+  if (margin < HUMAN_REVIEW_POLICY.minimumTopTwoMargin) {
+    return {
+      code: "close_candidates",
+      message: `the top two interpretations are only ${Math.round(margin * 100)} points apart.`,
+    };
+  }
+  return undefined;
+}
+
+/** Builds a concise question from the first differing canonical feature. */
+export function generateClarificationQuestion(
+  top: Pick<RankedInterpretation, "title" | "features">,
+  runnerUp: Pick<RankedInterpretation, "title" | "features">,
+): string | undefined {
+  const topFeatures = new Map(
+    top.features.map((feature) => feature.split(":", 2) as [string, string]),
+  );
+  const runnerFeatures = new Map(
+    runnerUp.features.map((feature) => feature.split(":", 2) as [string, string]),
+  );
+  for (const [dimension, topValue] of topFeatures) {
+    const runnerValue = runnerFeatures.get(dimension);
+    if (runnerValue && runnerValue !== topValue) {
+      const readable = (value: string) => value.replace(/-/g, " ");
+      return `Should the ${readable(dimension)} be ${readable(topValue)} or ${readable(runnerValue)}?`;
+    }
   }
   return undefined;
 }
@@ -119,22 +172,53 @@ export function rankConversation(
   messages: ConversationMessage[],
   weights: SignalWeights,
   previousInput?: RankingInput,
+  embeddings: EmbeddingProvider = embeddingProvider,
 ): RankingResult {
-  const current = rankSnapshot(input, messages, weights);
+  const current = rankSnapshot(input, messages, weights, embeddings);
   const previous =
     messages.length > 1
-      ? rankSnapshot(previousInput ?? input, messages.slice(0, -1), weights)
+      ? rankSnapshot(
+          previousInput ?? input,
+          messages.slice(0, -1),
+          weights,
+          embeddings,
+        )
       : undefined;
   const newestMessage = messages.at(-1);
 
   compareCandidates(current.ranking, previous?.ranking, newestMessage);
 
-  const uncertaintyReason = getUncertaintyReason(current.ranking);
-  const uncertain = Boolean(uncertaintyReason);
+  let humanReviewReason = evaluateHumanReview(current.ranking);
   const latestReframe = newestMessage
     ? [...current.reframes]
         .reverse()
         .find((event) => event.messageId === newestMessage.id)
+    : undefined;
+  const latestBoundary = newestMessage
+    ? input.taskBoundaries?.find((boundary) => boundary.messageId === newestMessage.id)
+    : undefined;
+  if (latestBoundary) {
+    const activeTopic = current.activeConstraints.find(
+      (constraint) =>
+        constraint.mode === "require" &&
+        (constraint.dimension === "topic" || constraint.dimension === "task"),
+    );
+    if (
+      activeTopic &&
+      !current.ranking.some((candidate) =>
+        candidate.features.includes(`${activeTopic.dimension}:${activeTopic.value}`),
+      )
+    ) {
+      humanReviewReason = {
+        code: "stale_candidates",
+        message: "the latest task switch is not represented by any current interpretation.",
+      };
+    }
+  }
+  const uncertaintyReason = humanReviewReason?.message;
+  const uncertain = Boolean(humanReviewReason);
+  const clarificationQuestion = uncertain && humanReviewReason?.code !== "none_above"
+    ? generateClarificationQuestion(current.ranking[0], current.ranking[1])
     : undefined;
   const mostInfluentialAxis = influentialAxis(weights);
   const rankingChange = buildRankingChange(
@@ -148,11 +232,23 @@ export function rankConversation(
     constraints: current.constraints,
     activeConstraints: current.activeConstraints,
     reframes: current.reframes,
+    conversationTransitions: classifyConversationTransitions(
+      messages,
+      input.taskBoundaries,
+    ),
     latestReframe,
     rankingChange,
     mostInfluentialAxis,
     uncertain,
     uncertaintyReason,
+    confidenceLabel: "relative",
+    humanReviewReason,
+    clarificationQuestion,
+    semanticModel: {
+      ...embeddings.model,
+      recencyDecay: SEMANTIC_RECENCY_DECAY,
+      lexicalFallback: true,
+    },
     explanation: createExplanation(
       current.ranking,
       rankingChange,
@@ -162,5 +258,113 @@ export function rankConversation(
       uncertaintyReason,
     ),
     processedMessageCount: messages.length,
+  };
+}
+
+/** Lists every string that a provider must embed before synchronous scoring. */
+function embeddingTexts(
+  input: RankingInput,
+  messages: ConversationMessage[],
+  previousInput?: RankingInput,
+): string[] {
+  const catalogues = previousInput ? [input, previousInput] : [input];
+  return [
+    ...messages.map((message) => message.text),
+    ...catalogues.flatMap((catalogue) =>
+      catalogue.interpretations.map((interpretation) =>
+        [
+          interpretation.title,
+          interpretation.summary,
+          ...interpretation.semanticTerms,
+        ].join(". "),
+      ),
+    ),
+    ...catalogues.flatMap((catalogue) =>
+      catalogue.history.map((task) => `${task.summary}. ${task.terms.join(". ")}`),
+    ),
+    selectActiveTaskMessages(messages, input.taskBoundaries)
+      .map((message) => message.text)
+      .join(" "),
+    selectActiveTaskMessages(
+      messages.slice(0, -1),
+      (previousInput ?? input).taskBoundaries,
+    )
+      .map((message) => message.text)
+      .join(" "),
+  ];
+}
+
+/** Prepares a network-backed embedding cache, then runs the common ranker. */
+export async function rankConversationAsync(
+  input: RankingInput,
+  messages: ConversationMessage[],
+  weights: SignalWeights,
+  previousInput: RankingInput | undefined,
+  embeddings: EmbeddingProvider,
+): Promise<RankingResult> {
+  const preparable = embeddings as Partial<PreparableEmbeddingProvider>;
+  if (preparable.prepare) {
+    await preparable.prepare(embeddingTexts(input, messages, previousInput));
+  }
+  return rankConversation(input, messages, weights, previousInput, embeddings);
+}
+
+/**
+ * Reweights already-computed axes without changing the embedding model or
+ * repeating provider work. Conversation deltas are cleared because they were
+ * calculated under the preceding policy and would otherwise be misleading.
+ */
+export function reweightRankingResult(
+  source: RankingResult,
+  weights: SignalWeights,
+): RankingResult {
+  const ranking = source.ranking
+    .map((item) => ({
+      ...item,
+      signals: { ...item.signals },
+      evidence: item.evidence.map((evidence) => ({ ...evidence })),
+      total: weightedTotal(item.signals, weights),
+      confidence: 0,
+      previousRank: undefined,
+      previous: undefined,
+      deltas: undefined,
+      change: undefined,
+    }))
+    .sort((left, right) => right.total - left.total);
+  const validItems = ranking.filter((item) => item.valid !== false);
+  const confidences = validItems.length
+    ? softmax(validItems.map((item) => item.total))
+    : [];
+  ranking.forEach((item, index) => {
+    item.rank = index + 1;
+    const validIndex = validItems.indexOf(item);
+    item.confidence = validIndex >= 0 ? confidences[validIndex] : 0;
+    item.explanation = candidateExplanation(item);
+  });
+  const humanReviewReason =
+    source.humanReviewReason?.code === "stale_candidates"
+      ? source.humanReviewReason
+      : evaluateHumanReview(ranking);
+  const uncertain = Boolean(humanReviewReason);
+  const mostInfluentialAxis = influentialAxis(weights);
+  return {
+    ...source,
+    ranking,
+    rankingChange: undefined,
+    mostInfluentialAxis,
+    uncertain,
+    uncertaintyReason: humanReviewReason?.message,
+    humanReviewReason,
+    clarificationQuestion: uncertain && humanReviewReason?.code !== "none_above"
+      ? generateClarificationQuestion(ranking[0], ranking[1])
+      : undefined,
+    explanation: createExplanation(
+      ranking,
+      undefined,
+      mostInfluentialAxis,
+      source.latestReframe,
+      uncertain,
+      humanReviewReason?.message,
+    ),
   };
 }

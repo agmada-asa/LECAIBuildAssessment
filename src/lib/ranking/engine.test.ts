@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { extractConstraints, rankConversation } from "./engine";
+import { extractConstraints, rankConversation, reweightRankingResult } from "./engine";
 import { DEFAULT_WEIGHTS, getScenario } from "./scenarios";
 import type {
   ConstraintRule,
@@ -114,8 +114,12 @@ describe("rankConversation", () => {
   });
 
   it("does not claim the winner rose or fell when it remains first", () => {
-    const scenario = getScenario("weekly-ambiguity");
-    const result = rankConversation(scenario, scenario.messages, DEFAULT_WEIGHTS);
+    const scenario = getScenario("finance-reframe");
+    const result = rankConversation(
+      scenario,
+      scenario.messages.slice(0, 2),
+      DEFAULT_WEIGHTS,
+    );
 
     expect(result.rankingChange).toMatchObject({ winnerChanged: false });
     expect(result.rankingChange?.previousWinnerExplanation).not.toContain("fell");
@@ -168,6 +172,106 @@ describe("rankConversation", () => {
         expect.objectContaining({ messageId: "M1", kind: "semantic" }),
       ]),
     );
+  });
+
+  it("applies a none-of-the-above gate before assigning relative confidence", () => {
+    const result = rankConversation(
+      {
+        interpretations: [
+          { id: "csv", title: "Export CSV", summary: "Export rows.", semanticTerms: ["CSV", "rows", "export"], features: ["format:csv"] },
+          { id: "slides", title: "Make slides", summary: "Create a deck.", semanticTerms: ["slides", "deck", "presentation"], features: ["format:slides"] },
+          { id: "dashboard", title: "Build dashboard", summary: "Build a dashboard.", semanticTerms: ["dashboard", "monitor", "interactive"], features: ["format:dashboard"] },
+        ],
+        constraintRules: [],
+        history: [],
+      },
+      [message("M1", "Book my dentist appointment for next Tuesday.")],
+      { semantic: 1, constraints: 0, history: 0 },
+    );
+
+    expect(result.humanReviewReason?.code).toBe("none_above");
+    expect(result.ranking.every((candidate) => candidate.confidence === 0)).toBe(true);
+    expect(result.clarificationQuestion).toBeUndefined();
+  });
+
+  it("does not score assistant or system-authored messages as user instructions", () => {
+    const result = rankConversation(
+      {
+        interpretations: [
+          { id: "email", title: "Write apology email", summary: "Write an apology.", semanticTerms: ["apology email", "apology", "email"], features: ["format:email"] },
+          { id: "slides", title: "Make slides", summary: "Create a deck.", semanticTerms: ["slides", "deck", "presentation"], features: ["format:slides"] },
+          { id: "dashboard", title: "Build dashboard", summary: "Build a dashboard.", semanticTerms: ["dashboard", "monitor", "interactive"], features: ["format:dashboard"] },
+        ],
+        constraintRules: [rule("slides", "make slides", "format", "slides")],
+        history: [],
+      },
+      [
+        { ...message("M1", "Write the apology email."), author: "user" },
+        { ...message("M2", "Make slides."), author: "assistant" },
+        { ...message("M3", "Build dashboard."), author: "system" },
+      ],
+      DEFAULT_WEIGHTS,
+    );
+
+    expect(result.ranking[0].id).toBe("email");
+    expect(result.constraints).toHaveLength(0);
+    expect(result.processedMessageCount).toBe(3);
+  });
+
+  it("keeps stale candidates in human review after local reweighting", () => {
+    const source = rankConversation(
+      {
+        interpretations: [
+          {
+            id: "database",
+            title: "Investigate the database",
+            summary: "Diagnose database reliability.",
+            semanticTerms: ["database", "reliability"],
+            features: ["topic:database"],
+          },
+          {
+            id: "sales",
+            title: "Prepare a sales forecast",
+            summary: "Forecast future sales.",
+            semanticTerms: ["sales", "forecast"],
+            features: ["topic:sales"],
+          },
+          {
+            id: "report",
+            title: "Write a status report",
+            summary: "Summarise current status.",
+            semanticTerms: ["status", "report"],
+            features: ["topic:reporting"],
+          },
+        ],
+        constraintRules: [
+          rule("onboarding", "welcome email", "topic", "employee-onboarding"),
+        ],
+        history: [],
+        taskBoundaries: [{ messageId: "M2", reason: "The task changed to onboarding." }],
+      },
+      [
+        message("M1", "Investigate database reliability."),
+        message("M2", "Write a welcome email for new employees."),
+      ],
+      DEFAULT_WEIGHTS,
+    );
+    const ranking = source.ranking.map((candidate, index) => ({
+      ...candidate,
+      signals: {
+        ...candidate.signals,
+        history: index === 0 ? 1 : 0,
+      },
+    }));
+
+    const reweighted = reweightRankingResult(
+      { ...source, ranking },
+      { semantic: 0, constraints: 0, history: 100 },
+    );
+
+    expect(source.humanReviewReason?.code).toBe("stale_candidates");
+    expect(reweighted.humanReviewReason?.code).toBe("stale_candidates");
+    expect(reweighted.uncertain).toBe(true);
   });
 
   it("compares a follow-up with the candidate catalogue shown by the prior run", () => {

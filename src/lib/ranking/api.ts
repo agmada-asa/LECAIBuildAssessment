@@ -3,6 +3,7 @@
 import type { ConversationLog } from "@/lib/conversations/schema";
 import type { ProviderId } from "@/lib/providers/types";
 import type { RankingInput, RankingResult, SignalWeights } from "./types";
+import type { ConversationState } from "@/lib/persistence/types";
 
 export type RankRequest = {
   provider: ProviderId;
@@ -22,6 +23,14 @@ export type RankSuccessResponse = {
   /** Normalized candidates and evidence rules used for deterministic reweighting. */
   input: RankingInput;
   result: RankingResult;
+  persistence: {
+    enabled: boolean;
+    identified: boolean;
+    state?: ConversationState;
+    rankingRunId?: string;
+    duplicate?: boolean;
+    message?: string;
+  };
 };
 
 export type RankErrorResponse = {
@@ -31,7 +40,9 @@ export type RankErrorResponse = {
       | "invalid_conversation"
       | "provider_unavailable"
       | "provider_failure"
-      | "invalid_provider_output";
+      | "invalid_provider_output"
+      | "candidate_generation_unavailable"
+      | "embedding_failure";
     message: string;
     issues?: Array<{ path: string; message: string }>;
   };

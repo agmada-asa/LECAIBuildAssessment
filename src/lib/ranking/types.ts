@@ -11,10 +11,23 @@ export type SignalWeights = Record<SignalKey, number>;
 
 export type ConversationMessage = {
   id: string;
-  /** Optional source label retained for compatibility; ranking is role-neutral. */
+  /** Optional participant role/name; explicit assistant/system roles are excluded. */
   author?: string;
   text: string;
   timestamp: string;
+};
+
+export type ConversationTransitionKind =
+  | "question"
+  | "deferral"
+  | "resumption"
+  | "replacement";
+
+/** A message-level state change kept separate from constraint replacement. */
+export type ConversationTransition = {
+  messageId: string;
+  kind: ConversationTransitionKind;
+  summary: string;
 };
 
 export type Interpretation = {
@@ -46,6 +59,11 @@ export type HistoricalTask = {
   summary: string;
   terms: string[];
   accepted: boolean;
+  /** Database cosine similarity and tenant provenance when retrieved. */
+  similarity?: number;
+  userId?: string;
+  domainName?: string;
+  decision?: "accepted" | "corrected";
 };
 
 /** Provider-grounded point where a message replaces the preceding task wholesale. */
@@ -81,6 +99,12 @@ export type Evidence = {
   text: string;
   kind: SignalKey | "reframe";
   sentiment: "supports" | "conflicts" | "neutral";
+  /** Scoring component responsible for this item. */
+  source?: "embedding" | "lexical" | "constraint" | "history";
+  /** Cosine or lexical similarity used to select this evidence. */
+  similarity?: number;
+  /** Accepted/corrected outcome ID for historical provenance. */
+  provenanceId?: string;
 };
 
 export type ExtractedConstraint = ConstraintRule & {
@@ -142,9 +166,14 @@ export type RankedInterpretation = {
   previousRank?: number;
   title: string;
   summary: string;
+  /** Canonical features retained for clarification and audit output. */
+  features: string[];
+  semanticTerms: string[];
   signals: SignalScores;
   total: number;
   confidence: number;
+  /** False when no source evidence connects this candidate to the active task. */
+  valid?: boolean;
   evidence: Evidence[];
   /** Previous values and signed deltas are present whenever a prior message exists. */
   previous?: RankingSnapshot;
@@ -152,6 +181,19 @@ export type RankedInterpretation = {
   change?: CandidateChange;
   /** Grounded summary for this candidate, not just the winning candidate. */
   explanation: string;
+};
+
+export type HumanReviewReasonCode =
+  | "none_above"
+  | "weak_evidence"
+  | "low_relative_confidence"
+  | "close_candidates"
+  | "stale_candidates";
+
+/** Stable policy code plus user-facing explanation for automated routing. */
+export type HumanReviewReason = {
+  code: HumanReviewReasonCode;
+  message: string;
 };
 
 export type RankingWinner = {
@@ -185,12 +227,28 @@ export type RankingResult = {
   /** One canonical active value per dimension for direct inspection. */
   activeConstraints: ExtractedConstraint[];
   reframes: ReframeEvent[];
+  conversationTransitions: ConversationTransition[];
   /** Present only when the newest message itself changed a constraint. */
   latestReframe?: ReframeEvent;
   rankingChange?: RankingChange;
   mostInfluentialAxis: InfluentialAxis;
   uncertain: boolean;
   uncertaintyReason?: string;
+  confidenceLabel: "relative";
+  humanReviewReason?: HumanReviewReason;
+  clarificationQuestion?: string;
+  /** Versioned embedding model used for messages, candidates, and history. */
+  semanticModel: {
+    provider: string;
+    name: string;
+    revision: string;
+    version: string;
+    dimensions: number;
+    deployment: "local" | "hosted";
+    purpose: "production" | "demo/test";
+    recencyDecay: number;
+    lexicalFallback: boolean;
+  };
   explanation: string;
   processedMessageCount: number;
 };
