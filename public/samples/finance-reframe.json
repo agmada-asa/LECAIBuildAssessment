@@ -1,0 +1,39 @@
+{
+  "conversationId": "finance-reframe",
+  "userId": "maya-chen",
+  "domain": {
+    "name": "retail-analytics",
+    "metadata": {
+      "team": "account-management"
+    }
+  },
+  "messages": [
+    {
+      "id": "M1",
+      "text": "Can you package June's Acme performance like the last client review?",
+      "timestamp": "2026-08-14T09:12:00.000Z"
+    },
+    {
+      "id": "M2",
+      "text": "Include the important charts and keep it concise.",
+      "timestamp": "2026-08-14T09:14:00.000Z"
+    },
+    {
+      "id": "M3",
+      "text": "Actually, this is for finance ingestion, not a review. No slides — they need the raw rows as CSV by Monday.",
+      "timestamp": "2026-08-14T09:19:00.000Z"
+    }
+  ],
+  "acceptedOutcomes": [
+    {
+      "id": "H1",
+      "title": "Client review deck",
+      "summary": "Quarterly Acme client review with concise performance charts."
+    },
+    {
+      "id": "H2",
+      "title": "Finance CSV export",
+      "summary": "Raw transaction rows for the finance ingestion workflow."
+    }
+  ]
+}
