@@ -7,7 +7,7 @@
  * deterministic domain logic, while CLI execution stays behind server routes.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type DragEvent } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   AiBrain03Icon,
@@ -56,6 +56,13 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import type { ProviderStatus } from "@/lib/providers/types";
+import type { ProviderId } from "@/lib/providers/types";
+import {
+  ConversationImportError,
+  parseConversationInput,
+} from "@/lib/conversations/import";
+import type { ConversationLog } from "@/lib/conversations/schema";
+import type { RankErrorResponse, RankSuccessResponse } from "@/lib/ranking/api";
 import { rankConversation } from "@/lib/ranking/engine";
 import {
   DEFAULT_WEIGHTS,
@@ -66,9 +73,11 @@ import {
 import type {
   ConversationMessage,
   RankedInterpretation,
+  RankingInput,
   RankingResult,
   SignalKey,
   SignalWeights,
+  Scenario,
 } from "@/lib/ranking/types";
 import { cn } from "@/lib/utils";
 
@@ -101,6 +110,64 @@ const SIGNAL_KEYS = Object.keys(SIGNAL_META) as SignalKey[];
 /** Formats a normalised value as a whole-number percentage for compact UI labels. */
 function percentage(value: number): string {
   return `${Math.round(value * 100)}%`;
+}
+
+/** Converts a walkthrough snapshot into the same canonical log used by imports. */
+function scenarioConversationLog(
+  scenario: Scenario,
+  messages: ConversationMessage[],
+): ConversationLog {
+  return {
+    conversationId: scenario.id,
+    userId: scenario.userName.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+    domain: { name: scenario.userRole },
+    messages: messages.map((message, index) => ({
+      ...message,
+      timestamp: Number.isNaN(Date.parse(message.timestamp))
+        ? `2026-08-14T${message.timestamp}:00.000Z`
+        : new Date(message.timestamp).toISOString(),
+      id: message.id || `M${index + 1}`,
+    })),
+    acceptedOutcomes: scenario.history
+      .filter((outcome) => outcome.accepted)
+      .map((outcome) => ({
+        id: outcome.id,
+        interpretationId: outcome.interpretationId,
+        title:
+          scenario.interpretations.find((item) => item.id === outcome.interpretationId)
+            ?.title ?? "Accepted task",
+        summary: outcome.summary,
+        semanticTerms: outcome.terms,
+      })),
+  };
+}
+
+/** Returns the first generated ID that does not collide with source IDs. */
+function nextMessageId(messages: ConversationMessage[]): string {
+  const usedIds = new Set(messages.map((message) => message.id));
+  let suffix = messages.length + 1;
+  while (usedIds.has(`M${suffix}`)) suffix += 1;
+  return `M${suffix}`;
+}
+
+/** Sends one complete canonical log to the unified server pipeline. */
+async function requestRanking(
+  conversation: ConversationLog,
+  provider: ProviderId,
+  weights: SignalWeights,
+): Promise<RankSuccessResponse> {
+  const response = await fetch("/api/rank", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ provider, conversation, weights }),
+  });
+  const body = (await response.json()) as RankSuccessResponse | RankErrorResponse;
+  if (!response.ok || "error" in body) {
+    throw new Error(
+      "error" in body ? body.error.message : "The ranking service returned an invalid response.",
+    );
+  }
+  return body;
 }
 
 /** Returns positive movement for a rise in rank and negative movement for a fall. */
@@ -257,6 +324,7 @@ function ConversationPanel({
               aria-label="Add a follow-up message"
               value={customMessage}
               onChange={(event) => onCustomMessageChange(event.target.value)}
+              disabled={isProcessing}
               placeholder="Add a follow-up to test the ranking…"
               className="min-h-20 resize-none rounded-xl bg-background pr-12 text-xs"
             />
@@ -265,7 +333,7 @@ function ConversationPanel({
               size="icon"
               className="absolute right-2 bottom-2 size-8 rounded-lg"
               onClick={onAddCustomMessage}
-              disabled={!customMessage.trim()}
+              disabled={isProcessing || !customMessage.trim()}
             >
               <HugeiconsIcon icon={ArrowRight01Icon} className="size-4" strokeWidth={2} />
             </Button>
@@ -281,6 +349,216 @@ function ConversationPanel({
         </button>
       </div>
     </section>
+  );
+}
+
+/** Imports, validates, previews, and dispatches one arbitrary conversation. */
+function ConversationImportDialog({
+  providers,
+  provider,
+  onProviderChange,
+  onAnalyze,
+}: {
+  providers: ProviderStatus[];
+  provider: ProviderId;
+  onProviderChange: (provider: ProviderId) => void;
+  onAnalyze: (log: ConversationLog, provider: ProviderId) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [source, setSource] = useState("");
+  const [filename, setFilename] = useState<string>();
+  const [preview, setPreview] = useState<ConversationLog>();
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  /** Validates current text without starting analysis. */
+  function createPreview(nextSource = source, nextFilename = filename) {
+    try {
+      const log = parseConversationInput(nextSource, { filename: nextFilename });
+      setPreview(log);
+      setError("");
+    } catch (caught) {
+      setPreview(undefined);
+      setError(
+        caught instanceof ConversationImportError
+          ? caught.message
+          : "This conversation could not be parsed.",
+      );
+    }
+  }
+
+  /** Reads a selected or dropped file as UTF-8, then renders its preview. */
+  async function loadFile(file: File) {
+    try {
+      const text = await file.text();
+      setSource(text);
+      setFilename(file.name);
+      createPreview(text, file.name);
+    } catch {
+      setError("The selected file could not be read as text.");
+    }
+  }
+
+  /** Accepts the first file dropped onto the import target. */
+  function handleDrop(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const file = event.dataTransfer.files[0];
+    if (file) void loadFile(file);
+  }
+
+  /** Runs the complete server pipeline and closes only after success. */
+  async function submit() {
+    if (!preview || submitting) return;
+    setSubmitting(true);
+    try {
+      await onAnalyze(preview, provider);
+      setOpen(false);
+      setError("");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Analysis failed.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger render={<Button size="sm" className="rounded-full" />}>
+        Analyze a log
+      </DialogTrigger>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[640px]">
+        <DialogHeader>
+          <DialogTitle className="font-heading">Analyze a conversation</DialogTitle>
+          <DialogDescription>
+            Paste a log or import JSON, CSV, or TXT. You can verify every message before analysis.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4 pt-2">
+          <div>
+            <label htmlFor="analysis-provider" className="mb-2 block text-xs font-semibold">
+              Provider
+            </label>
+            <Select
+              value={provider}
+              onValueChange={(value) => onProviderChange(String(value) as ProviderId)}
+            >
+              <SelectTrigger
+                id="analysis-provider"
+                aria-label="Analysis provider"
+                className="w-full rounded-xl"
+              >
+                <SelectValue>
+                  {providers.find((item) => item.id === provider)?.name ??
+                    "Deterministic demo"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {providers.map((item) => (
+                  <SelectItem key={item.id} value={item.id} disabled={!item.available}>
+                    {item.name}{item.available ? "" : " — unavailable"}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={handleDrop}
+            className="rounded-xl border border-dashed bg-muted/25 p-4 text-center"
+          >
+            <label htmlFor="conversation-file" className="cursor-pointer text-xs font-semibold">
+              Choose a conversation file
+            </label>
+            <input
+              id="conversation-file"
+              aria-label="Choose conversation file"
+              type="file"
+              accept=".json,.csv,.txt,application/json,text/csv,text/plain"
+              className="mt-2 block w-full text-xs text-muted-foreground"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) void loadFile(file);
+              }}
+            />
+            <p className="mt-2 text-[10px] text-muted-foreground">or drag and drop it here</p>
+          </div>
+
+          <div>
+            <label htmlFor="conversation-paste" className="mb-2 block text-xs font-semibold">
+              Paste conversation log
+            </label>
+            <Textarea
+              id="conversation-paste"
+              aria-label="Paste conversation log"
+              value={source}
+              onChange={(event) => {
+                setSource(event.target.value);
+                setFilename(undefined);
+                setPreview(undefined);
+                setError("");
+              }}
+              placeholder="request-17: Prepare the June report.\nfollow-up: Send the raw rows."
+              className="min-h-28 resize-y rounded-xl font-mono text-xs"
+            />
+          </div>
+
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full rounded-xl"
+            onClick={() => createPreview()}
+          >
+            Preview conversation
+          </Button>
+
+          {error && (
+            <Alert role="alert" className="border-rose-200 bg-rose-50 text-rose-950">
+              <HugeiconsIcon icon={Alert02Icon} className="size-4" strokeWidth={2} />
+              <AlertTitle className="text-xs">Check the conversation</AlertTitle>
+              <AlertDescription className="text-xs">{error}</AlertDescription>
+            </Alert>
+          )}
+
+          {preview && (
+            <section className="rounded-xl border p-3" aria-labelledby="message-preview-title">
+              <div className="mb-3 flex items-center justify-between">
+                <h3 id="message-preview-title" className="text-xs font-semibold">
+                  Message preview
+                </h3>
+                <span className="text-[10px] text-muted-foreground">
+                  {preview.messages.length} messages
+                </span>
+              </div>
+              <div className="max-h-48 space-y-2 overflow-y-auto">
+                {preview.messages.map((message) => (
+                  <div key={message.id} className="rounded-lg bg-muted/50 p-2.5">
+                    <p className="font-mono text-[10px] font-semibold">
+                      {message.id}
+                    </p>
+                    <p className="mt-1 text-xs leading-5">{message.text}</p>
+                  </div>
+                ))}
+              </div>
+              <Button
+                className="mt-3 w-full rounded-xl"
+                disabled={submitting}
+                onClick={() => void submit()}
+              >
+                {submitting ? "Analyzing…" : `Analyze ${preview.messages.length} messages`}
+              </Button>
+            </section>
+          )}
+
+          <p className="text-[10px] text-muted-foreground">
+            Samples: <a className="underline" href="/samples/finance-reframe.json" download>Finance reframe</a>
+            {" · "}
+            <a className="underline" href="/samples/weekly-ambiguity.csv" download>Weekly ambiguity</a>
+          </p>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -389,7 +667,7 @@ function RankingPanel({
       <div className="mb-4 flex items-end justify-between gap-4">
         <div className="flex items-center gap-2">
           <h2 className="font-heading text-2xl font-semibold tracking-tight">
-            Three plausible readings
+            Plausible readings
           </h2>
           <Tooltip>
             <TooltipTrigger
@@ -658,7 +936,13 @@ function WeightSettings({
 }
 
 /** Explains the adapter boundary and reports locally available providers. */
-function ProviderSettings({ providers }: { providers: ProviderStatus[] }) {
+function ProviderSettings({
+  providers,
+  selectedProvider,
+}: {
+  providers: ProviderStatus[];
+  selectedProvider: ProviderId;
+}) {
   return (
     <Dialog>
       <DialogTrigger
@@ -703,9 +987,9 @@ function ProviderSettings({ providers }: { providers: ProviderStatus[] }) {
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <p className="text-xs font-semibold">{provider.name}</p>
-                  {provider.id === "demo" && (
+                  {provider.id === selectedProvider && (
                     <Badge className="h-5 rounded-full bg-primary/10 text-[9px] text-primary shadow-none">
-                      Active
+                      Selected
                     </Badge>
                   )}
                 </div>
@@ -745,6 +1029,12 @@ export function IntentRanker() {
   const [weightPreset, setWeightPreset] = useState("explicit");
   const [selectedId, setSelectedId] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
+  const [importedLog, setImportedLog] = useState<ConversationLog>();
+  const [remoteResult, setRemoteResult] = useState<RankingResult>();
+  const [remoteInput, setRemoteInput] = useState<RankingInput>();
+  const [selectedProvider, setSelectedProvider] = useState<ProviderId>("demo");
+  const [analysisSource, setAnalysisSource] = useState<RankSuccessResponse["provider"]>();
+  const [analysisError, setAnalysisError] = useState("");
   const [providers, setProviders] = useState<ProviderStatus[]>([
     {
       id: "demo",
@@ -757,12 +1047,22 @@ export function IntentRanker() {
 
   const scenario = getScenario(scenarioId);
   const messages = useMemo(
-    () => [...scenario.messages.slice(0, visibleMessageCount), ...customMessages],
-    [scenario, visibleMessageCount, customMessages],
+    () =>
+      importedLog
+        ? [...importedLog.messages, ...customMessages]
+        : [...scenario.messages.slice(0, visibleMessageCount), ...customMessages],
+    [importedLog, scenario, visibleMessageCount, customMessages],
   );
-  const result = useMemo(
+  const fixtureResult = useMemo(
     () => rankConversation(scenario, messages, weights),
     [scenario, messages, weights],
+  );
+  const result = useMemo(
+    () =>
+      remoteInput
+        ? rankConversation(remoteInput, messages, weights)
+        : remoteResult ?? fixtureResult,
+    [fixtureResult, messages, remoteInput, remoteResult, weights],
   );
   const selected =
     result.ranking.find((item) => item.id === selectedId) ?? result.ranking[0];
@@ -785,6 +1085,11 @@ export function IntentRanker() {
     setCustomMessages([]);
     setCustomMessage("");
     setSelectedId("");
+    setImportedLog(undefined);
+    setRemoteResult(undefined);
+    setRemoteInput(undefined);
+    setAnalysisSource(undefined);
+    setAnalysisError("");
   }
 
   /** Reveals the next fixture message after a short, legible processing state. */
@@ -794,28 +1099,50 @@ export function IntentRanker() {
     window.setTimeout(() => {
       setSelectedId("");
       setVisibleMessageCount((count) => count + 1);
+      setRemoteResult(undefined);
+      setRemoteInput(undefined);
+      setAnalysisSource(undefined);
       setIsProcessing(false);
     }, 650);
   }
 
-  /** Appends a non-persistent user message and recalculates the ranking. */
-  function handleAddCustomMessage() {
+  /** Appends a non-persistent message and recalculates the ranking. */
+  async function handleAddCustomMessage() {
     const text = customMessage.trim();
-    if (!text) return;
-    setCustomMessages((current) => [
-      ...current,
-      {
-        id: `M${scenario.messages.length + current.length + 1}`,
-        author: "user",
-        text,
-        timestamp: new Date().toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-        }),
-      },
-    ]);
+    if (!text || isProcessing) return;
+    const message: ConversationMessage = {
+      id: nextMessageId(messages),
+      text,
+      timestamp: new Date().toISOString(),
+    };
+    const nextMessages = [...messages, message];
+    const log = importedLog
+      ? { ...importedLog, messages: nextMessages }
+      : scenarioConversationLog(scenario, nextMessages);
+    const previousImportedLog = importedLog;
+    const previousCustomMessages = customMessages;
+
+    // Commit the new message before waiting for provider latency so the chat
+    // remains responsive and accurately shows what is being processed.
+    if (importedLog) setImportedLog(log);
+    else setCustomMessages((current) => [...current, message]);
     setSelectedId("");
     setCustomMessage("");
+    setIsProcessing(true);
+    setAnalysisError("");
+    try {
+      const response = await requestRanking(log, selectedProvider, weights);
+      setRemoteResult(response.result);
+      setRemoteInput(response.input);
+      setAnalysisSource(response.provider);
+    } catch (caught) {
+      if (previousImportedLog) setImportedLog(previousImportedLog);
+      else setCustomMessages(previousCustomMessages);
+      setCustomMessage(text);
+      setAnalysisError(caught instanceof Error ? caught.message : "Analysis failed.");
+    } finally {
+      setIsProcessing(false);
+    }
   }
 
   /** Restores the selected scenario to its first two fixture messages. */
@@ -824,6 +1151,11 @@ export function IntentRanker() {
     setCustomMessages([]);
     setCustomMessage("");
     setSelectedId("");
+    setImportedLog(undefined);
+    setRemoteResult(undefined);
+    setRemoteInput(undefined);
+    setAnalysisSource(undefined);
+    setAnalysisError("");
   }
 
   /** Applies a named weighting policy while retaining all three scoring axes. */
@@ -845,6 +1177,23 @@ export function IntentRanker() {
     setWeights(DEFAULT_WEIGHTS);
     setWeightPreset("explicit");
     setSelectedId("");
+  }
+
+  /** Calls the unified endpoint and promotes a validated import into the workbench. */
+  async function handleImportedAnalysis(log: ConversationLog, provider: ProviderId) {
+    setIsProcessing(true);
+    setAnalysisError("");
+    try {
+      const response = await requestRanking(log, provider, weights);
+      setImportedLog(log);
+      setCustomMessages([]);
+      setRemoteResult(response.result);
+      setRemoteInput(response.input);
+      setAnalysisSource(response.provider);
+      setSelectedId("");
+    } finally {
+      setIsProcessing(false);
+    }
   }
 
   return (
@@ -884,6 +1233,12 @@ export function IntentRanker() {
           </Select>
 
           <div className="ml-auto flex items-center gap-2">
+            <ConversationImportDialog
+              providers={providers}
+              provider={selectedProvider}
+              onProviderChange={setSelectedProvider}
+              onAnalyze={handleImportedAnalysis}
+            />
             <WeightSettings
               weights={weights}
               preset={weightPreset}
@@ -891,7 +1246,10 @@ export function IntentRanker() {
               onWeightChange={handleWeightChange}
               onReset={restoreWeights}
             />
-            <ProviderSettings providers={providers} />
+            <ProviderSettings
+              providers={providers}
+              selectedProvider={selectedProvider}
+            />
           </div>
         </div>
       </header>
@@ -901,20 +1259,33 @@ export function IntentRanker() {
           <div className="mb-5">
             <div>
               <h1 className="font-heading text-xl font-semibold tracking-tight sm:text-2xl">
-                {scenario.title}
+                {importedLog ? "Imported conversation" : scenario.title}
               </h1>
               <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">
-                {scenario.description}
+                {importedLog
+                  ? `${importedLog.messages.length} messages supplied for ${importedLog.userId}.`
+                  : scenario.description}
               </p>
+              <Badge variant="outline" className="mt-2 rounded-full text-[10px]">
+                Analyzed by {analysisSource?.name ?? "Deterministic fixture"}
+              </Badge>
             </div>
           </div>
+
+          {analysisError && (
+            <Alert role="alert" className="mb-4 border-rose-200 bg-rose-50 text-rose-950">
+              <HugeiconsIcon icon={Alert02Icon} className="size-4" strokeWidth={2} />
+              <AlertTitle>Analysis could not be completed</AlertTitle>
+              <AlertDescription>{analysisError}</AlertDescription>
+            </Alert>
+          )}
 
           <div className="grid items-start gap-5 xl:grid-cols-[330px_minmax(460px,1fr)_320px] 2xl:grid-cols-[360px_minmax(560px,1fr)_350px]">
             <ConversationPanel
               messages={messages}
-              totalFixtureMessages={scenario.messages.length}
-              userName={scenario.userName}
-              userRole={scenario.userRole}
+              totalFixtureMessages={importedLog ? messages.length : scenario.messages.length}
+              userName={importedLog?.userId ?? scenario.userName}
+              userRole={importedLog?.domain?.name ?? scenario.userRole}
               isProcessing={isProcessing}
               customMessage={customMessage}
               onCustomMessageChange={setCustomMessage}
