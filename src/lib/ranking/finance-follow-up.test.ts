@@ -86,15 +86,15 @@ describe("finance follow-up ranking", () => {
     expect(result.clarificationQuestion).toBeUndefined();
     expect(proposal.evidence).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ text: "No dashboard yet", sentiment: "supports" }),
-        expect.objectContaining({ text: "No MCP now", sentiment: "supports" }),
+        expect.objectContaining({ text: "Source: “No dashboard yet”", sentiment: "supports" }),
+        expect.objectContaining({ text: "Source: “No MCP now”", sentiment: "supports" }),
       ]),
     );
     expect(
       result.ranking.find((candidate) => candidate.id === "mcp-dashboard")?.evidence,
     ).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ text: "No MCP now", sentiment: "conflicts" }),
+        expect.objectContaining({ text: "Source: “No MCP now”", sentiment: "conflicts" }),
       ]),
     );
   });

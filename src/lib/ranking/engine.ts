@@ -12,6 +12,10 @@ import {
   selectActiveTaskMessages,
 } from "./constraints";
 import {
+  calculateTaskFamilyConfidence,
+  HUMAN_REVIEW_POLICY,
+} from "./confidence";
+import {
   buildRankingChange,
   candidateExplanation,
   createExplanation,
@@ -33,13 +37,6 @@ import type {
 } from "./types";
 
 export { extractConstraints };
-
-/** Thresholds validated by the committed labelled evaluation set. */
-export const HUMAN_REVIEW_POLICY = {
-  minimumTotal: 0.52,
-  minimumRelativeConfidence: 0.55,
-  minimumTopTwoMargin: 0.12,
-} as const;
 
 /** Adds prior values, signed deltas, and evidence changes to matching candidates. */
 function compareCandidates(
@@ -112,8 +109,14 @@ export function evaluateHumanReview(
     };
   }
   const top = ranking[0];
-  const runnerUp = ranking[1];
-  const margin = top.confidence - runnerUp.confidence;
+  if (top.kind === "insufficient-context") {
+    return {
+      code: "insufficient_context",
+      message: "the underlying action or topic cannot be recovered from the supplied messages.",
+    };
+  }
+  if (top.kind === "conversation") return undefined;
+  const taskFamily = calculateTaskFamilyConfidence(ranking);
 
   if (top.total < HUMAN_REVIEW_POLICY.minimumTotal) {
     return {
@@ -121,16 +124,16 @@ export function evaluateHumanReview(
       message: "no interpretation has enough supporting evidence.",
     };
   }
-  if (top.confidence < HUMAN_REVIEW_POLICY.minimumRelativeConfidence) {
+  if (taskFamily.confidence < HUMAN_REVIEW_POLICY.minimumRelativeConfidence) {
     return {
       code: "low_relative_confidence",
-      message: "the leading interpretation does not clear 55% relative confidence.",
+      message: "the leading task family does not clear 55% relative confidence.",
     };
   }
-  if (margin < HUMAN_REVIEW_POLICY.minimumTopTwoMargin) {
+  if (taskFamily.margin < HUMAN_REVIEW_POLICY.minimumTopFamilyMargin) {
     return {
       code: "close_candidates",
-      message: `the top two interpretations are only ${Math.round(margin * 100)} points apart.`,
+      message: `the top two task families are only ${Math.round(taskFamily.margin * 100)} points apart.`,
     };
   }
   return undefined;
@@ -189,6 +192,7 @@ export function rankConversation(
   compareCandidates(current.ranking, previous?.ranking, newestMessage);
 
   let humanReviewReason = evaluateHumanReview(current.ranking);
+  const taskFamily = calculateTaskFamilyConfidence(current.ranking);
   const latestReframe = newestMessage
     ? [...current.reframes]
         .reverse()
@@ -217,7 +221,8 @@ export function rankConversation(
   }
   const uncertaintyReason = humanReviewReason?.message;
   const uncertain = Boolean(humanReviewReason);
-  const clarificationQuestion = uncertain && humanReviewReason?.code !== "none_above"
+  const clarificationQuestion = uncertain &&
+    !["none_above", "insufficient_context"].includes(humanReviewReason?.code ?? "")
     ? generateClarificationQuestion(current.ranking[0], current.ranking[1])
     : undefined;
   const mostInfluentialAxis = influentialAxis(weights);
@@ -236,17 +241,27 @@ export function rankConversation(
       messages,
       input.taskBoundaries,
     ),
+    conversationAssessment: input.conversationAssessment ?? {
+      kind: "undetermined",
+      summary: "This legacy result was ranked without an actionability assessment.",
+      evidenceMessageIds: [],
+      knownFacts: [],
+      unknowns: [],
+    },
     latestReframe,
     rankingChange,
     mostInfluentialAxis,
     uncertain,
     uncertaintyReason,
     confidenceLabel: "relative",
+    decisionConfidence: taskFamily.confidence,
+    decisionMargin: taskFamily.margin,
     humanReviewReason,
     clarificationQuestion,
     semanticModel: {
       ...embeddings.model,
       recencyDecay: SEMANTIC_RECENCY_DECAY,
+      conversationRecencyDecay: 1,
       lexicalFallback: true,
     },
     explanation: createExplanation(
@@ -330,7 +345,11 @@ export function reweightRankingResult(
       deltas: undefined,
       change: undefined,
     }))
-    .sort((left, right) => right.total - left.total);
+    .sort(
+      (left, right) =>
+        Number(right.valid !== false) - Number(left.valid !== false) ||
+        right.total - left.total,
+    );
   const validItems = ranking.filter((item) => item.valid !== false);
   const confidences = validItems.length
     ? softmax(validItems.map((item) => item.total))
@@ -345,6 +364,7 @@ export function reweightRankingResult(
     source.humanReviewReason?.code === "stale_candidates"
       ? source.humanReviewReason
       : evaluateHumanReview(ranking);
+  const taskFamily = calculateTaskFamilyConfidence(ranking);
   const uncertain = Boolean(humanReviewReason);
   const mostInfluentialAxis = influentialAxis(weights);
   return {
@@ -355,7 +375,10 @@ export function reweightRankingResult(
     uncertain,
     uncertaintyReason: humanReviewReason?.message,
     humanReviewReason,
-    clarificationQuestion: uncertain && humanReviewReason?.code !== "none_above"
+    decisionConfidence: taskFamily.confidence,
+    decisionMargin: taskFamily.margin,
+    clarificationQuestion: uncertain &&
+      !["none_above", "insufficient_context"].includes(humanReviewReason?.code ?? "")
       ? generateClarificationQuestion(ranking[0], ranking[1])
       : undefined,
     explanation: createExplanation(

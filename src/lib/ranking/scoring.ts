@@ -72,6 +72,7 @@ export function semanticScore(
   interpretation: Interpretation,
   messages: ConversationMessage[],
   embeddings: EmbeddingProvider = embeddingProvider,
+  recencyDecay = SEMANTIC_RECENCY_DECAY,
 ): { score: number; evidence: Evidence[] } {
   if (!messages.length) return { score: 0, evidence: [] };
   const candidateText = [
@@ -88,7 +89,7 @@ export function semanticScore(
   ]);
   const matches = messages.map((message, index) => {
     const age = messages.length - 1 - index;
-    const recency = Math.pow(SEMANTIC_RECENCY_DECAY, age);
+    const recency = Math.pow(recencyDecay, age);
     const sourceText = semanticMessages[index];
     const embedding = sourceText
       ? cosineSimilarity(candidateVector, messageVectors[index])
@@ -115,6 +116,10 @@ export function semanticScore(
     0,
   ) / totalRecency;
   const lexicalBest = Math.max(...matches.map((match) => match.lexical * match.recency));
+  const lexicalAverage = matches.reduce(
+    (total, match) => total + match.lexical * match.recency,
+    0,
+  ) / totalRecency;
   const evidence: Evidence[] = [];
 
   if (closest.embedding >= 0.08) {
@@ -143,7 +148,11 @@ export function semanticScore(
 
   return {
     score: round(
-      clamp(0.08 + embeddingAverage * 0.68 + closest.embedding * closest.recency * 0.16 + lexicalBest * 0.16),
+      clamp(
+        interpretation.kind === "conversation"
+          ? 0.08 + embeddingAverage * 0.68 + lexicalAverage * 0.24
+          : 0.08 + embeddingAverage * 0.68 + closest.embedding * closest.recency * 0.16 + lexicalBest * 0.16,
+      ),
     ),
     evidence,
   };
@@ -192,7 +201,7 @@ export function constraintScore(
     if (consistency >= 0.85) {
       evidence.push({
         messageId: constraint.messageId,
-        text: constraint.label,
+        text: `Source: “${constraint.matchedPhrase}”`,
         kind: "constraints",
         sentiment: "supports",
         source: "constraint",
@@ -200,7 +209,7 @@ export function constraintScore(
     } else if (consistency <= 0.15) {
       evidence.push({
         messageId: constraint.messageId,
-        text: constraint.label,
+        text: `Source: “${constraint.matchedPhrase}”`,
         kind: "constraints",
         sentiment: "conflicts",
         source: "constraint",
@@ -305,6 +314,21 @@ export type RankingSnapshotResult = {
   reframes: ReframeEvent[];
 };
 
+/** Applies the conversation-level gate before relative candidate ranking. */
+function matchesConversationAssessment(
+  interpretation: Interpretation,
+  assessment: RankingInput["conversationAssessment"],
+): boolean {
+  if (!assessment || assessment.kind === "undetermined") return true;
+  if (assessment.kind === "actionable-task") {
+    return (interpretation.kind ?? "task") === "task";
+  }
+  if (assessment.kind === "ordinary-conversation") {
+    return interpretation.kind === "conversation";
+  }
+  return interpretation.kind === "insufficient-context";
+}
+
 /** Scores and orders one conversation snapshot without comparing prior state. */
 export function rankSnapshot(
   input: RankingInput,
@@ -319,7 +343,14 @@ export function rankSnapshot(
   );
   const activeTaskMessages = selectActiveTaskMessages(messages, input.taskBoundaries);
   const provisional = input.interpretations.map((interpretation) => {
-    const semantic = semanticScore(interpretation, activeTaskMessages, embeddings);
+    // Ordinary conversations are characterized as a whole. Task ranking keeps
+    // recency so a genuine later instruction can supersede earlier work.
+    const semantic = semanticScore(
+      interpretation,
+      activeTaskMessages,
+      embeddings,
+      interpretation.kind === "conversation" ? 1 : SEMANTIC_RECENCY_DECAY,
+    );
     const constraint = constraintScore(interpretation, constraints);
     const historical = historicalScore(
       interpretation,
@@ -335,6 +366,7 @@ export function rankSnapshot(
 
     return {
       id: interpretation.id,
+      kind: interpretation.kind,
       rank: 0,
       title: interpretation.title,
       summary: interpretation.summary,
@@ -344,18 +376,21 @@ export function rankSnapshot(
       total: weightedTotal(signals, weights),
       confidence: 0,
       valid:
-        semantic.evidence.some(
+        matchesConversationAssessment(interpretation, input.conversationAssessment) &&
+        (semantic.evidence.some(
           (evidence) =>
             evidence.source === "lexical" || (evidence.similarity ?? 0) >= 0.14,
         ) ||
-        constraint.evidence.some((evidence) => evidence.sentiment === "supports") ||
-        historical.evidence.length > 0,
+          constraint.evidence.some((evidence) => evidence.sentiment === "supports") ||
+          historical.evidence.length > 0),
       evidence: [...constraint.evidence, ...semantic.evidence, ...historical.evidence],
       explanation: "",
     } satisfies RankedInterpretation;
   });
 
-  provisional.sort((left, right) => right.total - left.total);
+  provisional.sort(
+    (left, right) => Number(right.valid) - Number(left.valid) || right.total - left.total,
+  );
   const validItems = provisional.filter((item) => item.valid);
   const confidences = validItems.length
     ? softmax(validItems.map((item) => item.total))

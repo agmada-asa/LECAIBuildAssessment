@@ -165,12 +165,22 @@ export function createExplanation(
 ): string {
   const winner = ranking[0];
   const statements: string[] = [];
-  statements.push(
-    rankingChange?.winnerChanged
-      ? `${winner.title} moved to rank one, replacing ${rankingChange.previousWinner.title.toLowerCase()}.`
-      : `${winner.title} is currently the strongest interpretation.`,
-  );
-  statements.push(mostInfluentialAxis.explanation);
+  if (winner.kind === "conversation") {
+    statements.push(
+      "The actionability gate found no requested work; the leading reading characterizes the conversation without inventing a task.",
+    );
+  } else if (winner.kind === "insufficient-context") {
+    statements.push(
+      "The context gate could not recover the underlying action or topic from the supplied messages.",
+    );
+  } else {
+    statements.push(
+      rankingChange?.winnerChanged
+        ? `${winner.title} moved to rank one, replacing ${rankingChange.previousWinner.title.toLowerCase()}.`
+        : `${winner.title} is currently the strongest interpretation.`,
+    );
+    statements.push(mostInfluentialAxis.explanation);
+  }
 
   if (latestReframe) {
     statements.push(
@@ -180,7 +190,7 @@ export function createExplanation(
 
   if (uncertain && uncertaintyReason) {
     statements.push(`Human review is recommended: ${uncertaintyReason}`);
-  } else {
+  } else if (winner.kind !== "conversation") {
     const strongestSignal = (Object.entries(winner.signals) as [SignalKey, number][]).sort(
       (left, right) => right[1] - left[1],
     )[0];

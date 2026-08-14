@@ -190,6 +190,7 @@ export type CandidateChange = {
 
 export type RankedInterpretation = {
   id: string;
+  kind?: InterpretationKind;
   rank: number;
   previousRank?: number;
   title: string;
@@ -216,6 +217,7 @@ export type HumanReviewReasonCode =
   | "weak_evidence"
   | "low_relative_confidence"
   | "close_candidates"
+  | "insufficient_context"
   | "stale_candidates";
 
 /** Stable policy code plus user-facing explanation for automated routing. */
@@ -256,6 +258,8 @@ export type RankingResult = {
   activeConstraints: ExtractedConstraint[];
   reframes: ReframeEvent[];
   conversationTransitions: ConversationTransition[];
+  /** Explicit result of the actionability/context gate that precedes ranking. */
+  conversationAssessment: ConversationAssessment;
   /** Present only when the newest message itself changed a constraint. */
   latestReframe?: ReframeEvent;
   rankingChange?: RankingChange;
@@ -263,6 +267,10 @@ export type RankingResult = {
   uncertain: boolean;
   uncertaintyReason?: string;
   confidenceLabel: "relative";
+  /** Confidence assigned to the winning family of near-identical task variants. */
+  decisionConfidence: number;
+  /** Winning task-family confidence minus the strongest competing family. */
+  decisionMargin: number;
   humanReviewReason?: HumanReviewReason;
   clarificationQuestion?: string;
   /** Versioned embedding model used for messages, candidates, and history. */
@@ -275,6 +283,8 @@ export type RankingResult = {
     deployment: "local" | "hosted";
     purpose: "production" | "demo/test";
     recencyDecay: number;
+    /** Ordinary-conversation readings use full-log coverage instead of recency. */
+    conversationRecencyDecay: number;
     lexicalFallback: boolean;
   };
   explanation: string;
