@@ -6,10 +6,7 @@ import { buildCodexArguments } from "./command";
 
 describe("buildCodexArguments", () => {
   it("isolates extraction from user configuration and write access", () => {
-    const argumentsList = buildCodexArguments(
-      "codex",
-      "/tmp/analysis.schema.json",
-    );
+    const argumentsList = buildCodexArguments("/tmp/analysis.schema.json");
 
     expect(argumentsList).toEqual(
       expect.arrayContaining([
@@ -24,9 +21,9 @@ describe("buildCodexArguments", () => {
     expect(argumentsList.at(-1)).toBe("-");
   });
 
-  it("selects Ollama explicitly for local open-weight inference", () => {
-    expect(
-      buildCodexArguments("codex-oss", "/tmp/analysis.schema.json"),
-    ).toEqual(expect.arrayContaining(["--oss", "--local-provider", "ollama"]));
+  it("does not enable an implicit local-model backend", () => {
+    expect(buildCodexArguments("/tmp/analysis.schema.json")).not.toEqual(
+      expect.arrayContaining(["--oss", "--local-provider"]),
+    );
   });
 });

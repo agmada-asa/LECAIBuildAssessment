@@ -5,7 +5,7 @@
  * deterministic ranking engine remains responsible for weights, confidence,
  * explanations, and human-review decisions.
  */
-export type ProviderId = "demo" | "codex" | "codex-oss";
+export type ProviderId = "demo" | "codex" | "api";
 
 export type ProviderStatus = {
   id: ProviderId;

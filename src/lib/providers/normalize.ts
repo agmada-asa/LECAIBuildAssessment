@@ -8,6 +8,7 @@
 import { z } from "zod";
 
 import type { ConversationLog } from "@/lib/conversations/schema";
+import { selectUserInstructionMessages } from "@/lib/ranking/constraints";
 import type { RankingInput } from "@/lib/ranking/types";
 import type { ProviderAnalysis } from "./types";
 
@@ -140,6 +141,55 @@ function overlap(left: string, right: string): number {
   return matches / Math.min(leftTokens.size, rightTokens.size);
 }
 
+/** Returns true when candidates explicitly choose different values for one dimension. */
+function haveConflictingFeatures(left: string[], right: string[]): boolean {
+  const leftByDimension = new Map(
+    left.map((feature) => feature.toLowerCase().split(":", 2) as [string, string]),
+  );
+  return right.some((feature) => {
+    const [dimension, value] = feature.toLowerCase().split(":", 2);
+    const leftValue = leftByDimension.get(dimension);
+    return leftValue !== undefined && leftValue !== value;
+  });
+}
+
+/** Measures agreement between explicit canonical feature selections. */
+function sharedFeatureRatio(left: string[], right: string[]): number {
+  const leftSet = new Set(left.map((feature) => feature.toLowerCase()));
+  const rightSet = new Set(right.map((feature) => feature.toLowerCase()));
+  const shared = [...leftSet].filter((feature) => rightSet.has(feature)).length;
+  return shared / Math.max(1, Math.min(leftSet.size, rightSet.size));
+}
+
+/** Drops presentation modifiers that commonly pad one decision into paraphrases. */
+function decisionText(value: string): string {
+  return normaliseText(value)
+    .split(" ")
+    .filter(
+      (token) =>
+        !["combined", "concise", "implementation", "only", "one", "single"].includes(token),
+    )
+    .join(" ");
+}
+
+/** Provider-neutral semantic duplicate check, guarded by feature conflicts. */
+function areEquivalentCandidates(
+  left: RankingInput["interpretations"][number],
+  right: ProviderAnalysis["interpretations"][number],
+): boolean {
+  if (haveConflictingFeatures(left.features, right.features)) return false;
+  const proseOverlap = overlap(
+    `${left.title} ${left.summary}`,
+    `${right.title} ${right.summary}`,
+  );
+  const decisionOverlap = overlap(decisionText(left.title), decisionText(right.title));
+  return (
+    proseOverlap >= 0.82 ||
+    decisionOverlap >= 0.8 ||
+    (sharedFeatureRatio(left.features, right.features) >= 0.5 && proseOverlap >= 0.35)
+  );
+}
+
 /** Maps accepted outcomes to the closest current candidate for history scoring. */
 function buildHistory(log: ConversationLog, interpretations: RankingInput["interpretations"]) {
   return log.acceptedOutcomes.map((outcome) => {
@@ -180,11 +230,9 @@ export function normalizeProviderAnalysis(
   analysis.interpretations.forEach((candidate) => {
     const duplicate = interpretations.find(
       (item) =>
-        normaliseText(item.title) === normaliseText(candidate.title) ||
-        overlap(
-          `${item.title} ${item.summary}`,
-          `${candidate.title} ${candidate.summary}`,
-        ) >= 0.82,
+        !haveConflictingFeatures(item.features, candidate.features) &&
+        (normaliseText(item.title) === normaliseText(candidate.title) ||
+          areEquivalentCandidates(item, candidate)),
     );
     if (duplicate) {
       duplicate.semanticTerms = [
@@ -214,8 +262,9 @@ export function normalizeProviderAnalysis(
     throw new Error("The provider must return at least three genuinely distinct interpretations.");
   }
 
-  const sourceText = log.messages.map((message) => normaliseText(message.text));
-  const sourceMessageIds = new Set(log.messages.map((message) => message.id));
+  const instructionMessages = selectUserInstructionMessages(log.messages);
+  const sourceText = instructionMessages.map((message) => normaliseText(message.text));
+  const sourceMessageIds = new Set(instructionMessages.map((message) => message.id));
   (analysis.taskBoundaries ?? []).forEach((boundary) => {
     if (!sourceMessageIds.has(boundary.messageId)) {
       throw new Error(
@@ -249,7 +298,7 @@ export function normalizeProviderAnalysis(
   });
 
   const messageTextById = new Map(
-    log.messages.map((message) => [message.id, normaliseText(message.text)]),
+    instructionMessages.map((message) => [message.id, normaliseText(message.text)]),
   );
   const taskBoundaries = (analysis.taskBoundaries ?? []).filter((boundary) => {
     const boundaryText = messageTextById.get(boundary.messageId)!;
