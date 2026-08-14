@@ -80,6 +80,11 @@ describe("IntentRanker", () => {
       .getByText("Export finance-ready CSV data")
       .closest("button");
     expect(csvCard).toHaveTextContent("1");
+    expect(csvCard).toHaveTextContent(/weighted score .*\([+-].*\)/);
+    expect(screen.getByText("Changed with M3")).toBeInTheDocument();
+    expect(screen.getByText("Unchanged evidence")).toBeInTheDocument();
+    expect(screen.getByText(/constraint consistency received the largest weight/i)).toBeInTheDocument();
+    expect(screen.getByText(/rose from #3 to #1/i)).toBeInTheDocument();
   });
 
   it("labels the weight preset control with a human-readable policy name", async () => {
@@ -220,6 +225,56 @@ describe("IntentRanker", () => {
     );
   });
 
+  it("ignores a provider response after the conversation has been reset", async () => {
+    let finishRanking: ((response: Response) => void) | undefined;
+    const pendingRanking = new Promise<Response>((resolve) => {
+      finishRanking = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        if (String(input) === "/api/rank") return pendingRanking;
+        return Promise.reject(new Error("Provider discovery is unavailable."));
+      }),
+    );
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<IntentRanker />);
+
+    await user.click(screen.getByRole("button", { name: "Process next message" }));
+    await act(async () => vi.advanceTimersByTime(650));
+    await user.type(
+      screen.getByRole("textbox", { name: "Add a follow-up message" }),
+      "Replace this with a weekly report.",
+    );
+    await user.click(screen.getByRole("button", { name: "Add follow-up message" }));
+    await user.click(screen.getByRole("button", { name: "Reset conversation" }));
+
+    const staleScenario = getScenario("weekly-ambiguity");
+    finishRanking?.(
+      new Response(
+        JSON.stringify({
+          provider: {
+            id: "demo",
+            name: "Stale provider",
+            fallback: true,
+            notes: "This response should be ignored.",
+          },
+          input: staleScenario,
+          result: rankConversation(
+            staleScenario,
+            staleScenario.messages,
+            DEFAULT_WEIGHTS,
+          ),
+        }),
+      ),
+    );
+    await act(async () => Promise.resolve());
+
+    expect(screen.getByText("Analyzed by Deterministic fixture")).toBeInTheDocument();
+    expect(screen.queryByText("Send a scheduled weekly report")).not.toBeInTheDocument();
+    expect(screen.getByText("Create a client review deck")).toBeInTheDocument();
+  });
+
   it("generates a follow-up ID that cannot collide with imported source IDs", async () => {
     const scenario = getScenario("finance-reframe");
     const log = {
@@ -282,6 +337,7 @@ describe("IntentRanker", () => {
       "M3",
       "M4",
     ]);
+    expect(requestBody.previousInput.interpretations).toEqual(scenario.interpretations);
   });
 
   it("rolls back an optimistic follow-up when ranking fails", async () => {
