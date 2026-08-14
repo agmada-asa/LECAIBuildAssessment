@@ -8,10 +8,14 @@ This document explains the system boundaries and the reasoning behind them. It c
 Canonical ConversationLog (JSON / CSV / TXT import)
         │
         ▼
-Selected provider → ProviderAnalysis (3–5 candidates)
+Selected provider → actionability/recoverability assessment
+        │
+        ▼
+ProviderAnalysis (3–5 typed candidates)
         │
         ▼
 Provider normalization
+        ├── assessment evidence and matching candidate type
         ├── stable candidate keys and distinctness
         ├── grounded constraints with source IDs
         ├── embedding-assisted duplicate consolidation
@@ -29,7 +33,9 @@ Normalised weighting policy
         ▼
 Ranked candidates + relative confidence
         │
-        ├── clear result → decision brief
+        ├── ordinary exchange → no actionable task
+        ├── missing context → explicit abstention + known unknowns
+        ├── clear task → decision brief
         └── weak/close result → human review + clarifying question
 ```
 
@@ -39,7 +45,9 @@ The application—not the model—owns conversational state. Every imported form
 is converted to `ConversationLog`, and a ranking run receives the full ordered
 message list, provider-normalized candidates, active policy weights, and accepted
 history. It also recomputes the immediately previous turn so movement can be
-explained accurately. Source message IDs are never replaced or sorted.
+explained accurately. Import entries are never sorted; they receive canonical
+`M1`, `M2` IDs in source order so repeated or role-like source labels cannot
+invalidate a conversation.
 
 The unified API returns the normalized ranking input with the initial result.
 The browser can therefore apply weight changes deterministically without another
@@ -98,6 +106,11 @@ similarity per message, applies `0.5 ^ age` recency decay, and retains the
 closest source message as evidence. A separately labelled lexical component
 keeps exact matching inspectable and suppresses explicitly negated phrase
 support. The two components form a bounded hybrid score.
+
+Task candidates retain the `0.5 ^ age` preference because later instructions
+can replace earlier work. Ordinary-conversation candidates use uniform message
+weighting and average lexical coverage so a closing acknowledgement or personal
+commitment does not displace the meaning of the exchange as a whole.
 
 The application accepts only a pinned OpenAI-compatible API model and fails
 closed when its configuration is incomplete. The deterministic feature hash is
@@ -167,9 +180,33 @@ reviewed ranking run and matching queue snapshot from `human_review` to
 
 ## Confidence and abstention
 
-Weighted evidence scores are converted to relative confidence with softmax at temperature `0.17`. This makes the ordering legible but does not establish empirical calibration.
+Before ranking, the provider classifies the conversation as an actionable task,
+ordinary conversation, or insufficient context. Interpretations are typed as a
+task, conversation, or insufficient-context reading, and normalization requires
+at least one candidate compatible with the assessment. The deterministic scorer
+marks incompatible candidate types invalid before ordering and relative
+confidence. Legacy persisted inputs without this assessment retain the previous
+open ranking behavior.
 
-The abstention layer looks at evidence sufficiency, leader confidence, and the leader/runner-up margin. It is deliberately separate from candidate generation, so any provider must obey the same human-review policy.
+An ordinary-conversation result is a valid outcome rather than an error or a
+manufactured task. An insufficient-context result is always routed to review
+with absent referents or facts listed explicitly; the engine does not ask a
+false either/or question between invented tasks. This categorical gate is kept
+separate from relative candidate confidence, which only compares compatible
+readings.
+
+Weighted evidence scores are converted to relative candidate confidence with
+softmax at temperature `0.17`. This makes the ordering legible but does not
+establish empirical calibration. For the review decision, candidates with an
+overlapping task title and at least three and 70% shared canonical features are
+grouped into a task family. The family receives the sum of its candidates'
+relative confidence, making review stable when a provider emits multiple
+framings of the same explicit task. Candidate scores remain separate in the
+audit output.
+
+The abstention layer looks at evidence sufficiency, winning task-family
+confidence, and the top-family margin. It is deliberately separate from
+candidate generation, so any provider must obey the same human-review policy.
 
 Review output includes a stable reason code and a clarification question based
 on the first differing top-two feature dimension. A provider-grounded task
@@ -207,6 +244,10 @@ Weight changes affect ranking influence, not the underlying evidence. Conflict b
 `ProviderAnalysis` is intentionally narrow:
 
 - Three to five mutually exclusive interpretations.
+- One conversation-level actionability/recoverability assessment with grounded
+  source-message IDs, known facts, and material unknowns.
+- A candidate kind (`task`, `conversation`, or `insufficient-context`) on every
+  interpretation, including at least one candidate matching the assessment.
 - Semantic terms for each interpretation.
 - Canonical candidate features.
 - Extracted constraints grounded in conversation phrases.
@@ -221,11 +262,13 @@ message and a candidate feature dimension, substantially overlapping candidates
 are merged, and fewer than three distinct results are rejected. Message order and
 source IDs carry provenance. Explicit assistant/system/tool authors are not
 scored as new instructions; role-less logs intentionally retain all messages.
-Constraint display labels must retain meaningful language from their grounded
-source phrases; claims inferred only from omission are discarded. Cue-free task
-boundaries must introduce a required `topic` or `task` constraint in the same
-message. Format-, audience-, tone-, and detail-only follow-ups therefore inherit
-the established subject instead of clearing the earlier context.
+Constraint display uses the exact matched source phrase; provider-written labels
+cannot masquerade as message evidence. Pure acknowledgements are discarded as
+constraints and cannot create task boundaries. Cue-free task boundaries must
+contain a new request or instruction and introduce a required `topic` or `task`
+constraint in the same message. Format-, audience-, tone-, and detail-only
+follow-ups therefore inherit the established subject instead of clearing the
+earlier context.
 
 The Codex adapter uses `spawn` with an argument array and stdin. It never builds
 a shell command from user content. Live extraction runs from the temporary

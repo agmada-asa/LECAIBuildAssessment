@@ -16,6 +16,8 @@ feature-hash provider exists only for fast, reproducible automated tests.
   author/role, domain, and accepted outcomes.
 - Paste, file picker, and drag/drop imports with validation and preview.
 - Live Codex CLI or OpenAI-compatible candidate extraction.
+- A pre-ranking gate that distinguishes actionable work, ordinary conversation,
+  and context that cannot be recovered from the supplied messages.
 - API-only trained embeddings with batching, retry, timeout, cache, provenance,
   model compatibility checks, and no silent fallback.
 - Constraint supersession, unrelated task replacement, deferral, resumption,
@@ -36,11 +38,12 @@ feature-hash provider exists only for fast, reproducible automated tests.
 JSON / CSV / TXT
   -> parse and validate ConversationLog
   -> persist owner-scoped conversation revision
-  -> live provider generates 3-5 distinct candidates and grounded constraints
+  -> live provider assesses actionability and context recoverability
+  -> provider generates 3-5 typed candidates and grounded constraints
   -> normalize IDs, features, boundaries, duplicates, and source references
   -> API embeds messages, candidates, and accepted history with one pinned model
   -> score semantic + constraints + history independently
-  -> consolidate candidates, calculate total/confidence, apply review policy
+  -> gate incompatible candidate kinds, calculate confidence, apply review policy
   -> persist RankingResult and show evidence, deltas, and clarification
   -> accepted/corrected outcome becomes scoped future history
 ```
@@ -97,21 +100,23 @@ Canonical JSON:
 }
 ```
 
-JSON message arrays are also accepted. CSV requires `text`; `id`, `timestamp`,
-and `author` are optional:
+JSON message arrays are also accepted. CSV requires `text`; `timestamp` and
+`author` are optional:
 
 ```csv
-id,text,timestamp,author
-M1,Write the proposal,2026-08-14T09:00:00Z,user
-M2,No dashboard yet,2026-08-14T09:01:00Z,user
+text,timestamp,author
+Write the proposal,2026-08-14T09:00:00Z,user
+No dashboard yet,2026-08-14T09:01:00Z,user
 ```
 
-TXT uses one message per non-empty line. Optional arbitrary IDs use `id: text`.
-Missing IDs receive stable `M1`, `M2` values. Missing times are normalized for
-the canonical contract but displayed as “time unavailable,” never as a real
-year-2000 timestamp. Role-less messages are intentionally treated as task
-context; when authors are present, assistant/system/tool/developer text is not
-scored as a new user instruction.
+TXT uses one message per non-empty line and does not interpret colon-prefixed
+labels. TXT lines, JSON entries, and CSV rows receive stable `M1`, `M2` IDs in
+source order; supplied IDs are ignored so repeated labels cannot invalidate an
+import. Missing times are normalized for the canonical contract but displayed
+as “time unavailable,” never as a real year-2000 timestamp. Role-less messages
+are intentionally treated as task context; when authors are present in JSON or
+CSV, assistant/system/tool/developer text is not scored as a new user
+instruction.
 
 ## Configuration
 
@@ -175,11 +180,23 @@ of similar conversations from the same imported user and exact domain. The
 workbench marks the accepted candidate, changes a reviewed task to complete, and
 confirms this effect in the decision panel.
 
-Relative confidence uses softmax temperature `0.17`; it is not a probability of
-intent. Human review is required below `0.52` total evidence, below `0.55`
-leading confidence, within a `0.12` top-two margin, or when no valid/current
-candidate represents the task. These policy values preserve all labelled
-ambiguity/weak-evidence escalations; they are not statistical calibration.
+Relative candidate confidence uses softmax temperature `0.17`; it is not a
+probability of intent. The review policy combines candidates into one task
+family when their titles overlap and they share at least three and 70% of their
+canonical features. This prevents provider-generated framing variants from
+splitting a clear task's decision confidence. Human review is required below
+`0.52` total evidence, below `0.55` task-family confidence, within a `0.12`
+top-family margin, or when no valid/current candidate represents the task.
+These policy values preserve all labelled ambiguity/weak-evidence escalations;
+they are not statistical calibration.
+
+Actionability is decided before candidate ranking. A clear social or status
+exchange can therefore return **No actionable task detected** without forcing a
+deliverable, while missing referents or incoherent text returns an explicit
+insufficient-context result and records what remains unknown. Candidate
+confidence compares only readings compatible with that gate; it does not imply
+confidence that a task exists. Constraint evidence always displays the exact
+matched source phrase rather than a provider-written label.
 
 ## Embedding selection and evaluation
 
@@ -193,6 +210,9 @@ with the deterministic test oracle. The credentialed trained-model run measured
 18/22 top-one (81.8%) with 826 ms p95 per case on 14 August 2026. Lexical-only
 also measured 18/22. Provider-inclusive raw-log tests separately cover grounding,
 distinctness, open sets, roles, negation, deferral/resumption, and false review.
+The actionability corpus adds 20 unique easy, medium, hard, impossible, and
+incoherent conversations; shuffled blind duplicates are excluded. Impossible
+and incoherent cases must abstain rather than invent an underlying task.
 
 ```bash
 pnpm test
