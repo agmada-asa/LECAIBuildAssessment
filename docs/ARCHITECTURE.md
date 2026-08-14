@@ -57,10 +57,25 @@ Passing the full canonical log prevents provider session memory from becoming
 an undocumented fourth signal.
 
 Imported conversations and appended messages are also revisioned in the local
-queue before analysis. A bounded callable worker claims leased tasks, commits
-by revision/token compare-and-swap, recovers expired processing leases after a
-restart, and reranks only the changed conversation. The queue view exposes full
-ranked evidence for `human_review` tasks and permits failed-task retries.
+queue before analysis. The direct browser request carries the exact queued task
+ID and revision, allowing its successful result to commit that pending snapshot
+without a second provider call. A bounded callable worker remains available for
+pending and retried work; it claims leased tasks, commits by revision/token
+compare-and-swap, recovers expired processing leases after a restart, and
+reranks only the changed conversation. A collapsible task sidebar shows waiting,
+analyzing, review, complete, and failed states; while work is waiting or
+analyzing, it polls the owner-scoped queue every three seconds with sequential
+requests and stops after all visible work reaches a terminal state. It retries
+failures and restores completed conversations into the workbench without
+rerunning analysis. Queue reads also reconcile legacy pending rows from an exact
+persisted idempotency key; they never promote a merely similar or newer
+conversation revision.
+
+The task sidebar renders flat, divided navigation rows. Conversation renames are
+optimistic in the client and transactional in persistence: the queue identity,
+conversation record, and stored run payloads change together, while stable
+internal IDs remain unchanged. Name collisions reject the transaction and cause
+the client to restore the previous label.
 
 ## Rendering boundary
 
@@ -146,6 +161,9 @@ similarity and retains outcome provenance. The scorer maps
 that outcome to each current candidate by embedding similarity, so generated
 candidate IDs do not need to match historical IDs. This keeps historical
 pattern matching distinct from current-conversation semantic similarity.
+Saving either an acceptance or correction also atomically changes the exact
+reviewed ranking run and matching queue snapshot from `human_review` to
+`decided`; unrelated or newer queue revisions are not changed.
 
 ## Confidence and abstention
 

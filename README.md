@@ -24,6 +24,11 @@ feature-hash provider exists only for fast, reproducible automated tests.
   evidence, previous/current winners, and review reasons.
 - Owner-scoped SQLite conversations, queued revisions, ranking runs, accepted or
   corrected outcomes, restart recovery, and user/domain-filtered retrieval.
+- A collapsible task sidebar that polls waiting and analyzing work for live
+  status updates, then reopens completed conversations without rerunning the
+  analysis provider.
+- Divider-based task rows, optimistic conversation renaming, and transactional
+  persistence of the new name across the queue and saved ranking snapshots.
 
 ## Log-to-ranking flow
 
@@ -135,7 +140,27 @@ Provider discovery reports `configured` separately from `operational`. Codex is
 checked with a bounded version command; API readiness lists models with a
 three-second timeout. A configured provider that fails its probe cannot be
 selected. Failed analysis visibly leaves the previous result stale and disables
-accept/correct actions.
+accept/correct actions. A successful direct analysis commits the exact queued
+revision in the same request, so the queue does not require a duplicate provider
+call to leave `pending`.
+Loading the task sidebar also repairs legacy pending entries when an exact
+owner/provider/conversation/message/weight match already exists in persisted
+ranking history; unmatched work remains pending.
+
+Renaming an analyzed conversation updates the heading and task sidebar
+immediately. The server then atomically renames the owner-scoped queue entry,
+conversation, and stored run snapshots. A conflicting or failed rename restores
+the previous name and shows an error.
+
+Readiness confirms that the endpoint is reachable and lists the selected model;
+it cannot guarantee capacity for the next generation request. Runtime failures
+therefore distinguish rejected credentials, denied or missing models, rate or
+capacity limits, upstream 5xx responses, and invalid structured output without
+showing provider response bodies or credentials. For direct OpenAI API use, set
+the base URL to `https://api.openai.com/v1`, use an OpenAI API key, and select a
+model available to that project that supports Chat Completions structured
+outputs. OpenRouter and other compatible gateways use their own keys, model
+names, quotas, and capacity policies.
 
 ## Scoring and uncertainty
 
@@ -144,6 +169,11 @@ receive the largest weight because direct user requirements and prohibitions
 should beat topical resemblance. Semantic similarity combines recency-weighted
 trained cosine similarity with visible lexical overlap. History is deliberately
 weaker and only retrieves accepted outcomes for the imported user and domain.
+Accepting an interpretation does not execute the inferred task. It stores the
+selected interpretation as positive, owner-scoped evidence for later rankings
+of similar conversations from the same imported user and exact domain. The
+workbench marks the accepted candidate, changes a reviewed task to complete, and
+confirms this effect in the decision panel.
 
 Relative confidence uses softmax temperature `0.17`; it is not a probability of
 intent. Human review is required below `0.52` total evidence, below `0.55`
