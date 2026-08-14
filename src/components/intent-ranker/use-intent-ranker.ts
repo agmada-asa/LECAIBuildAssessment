@@ -67,6 +67,7 @@ export function useIntentRanker() {
   const [weightPreset, setWeightPreset] = useState("explicit");
   const [selectedId, setSelectedId] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
+  const [processingConversationId, setProcessingConversationId] = useState<string>();
   const [isImporting, setIsImporting] = useState(false);
   const [importedLog, setImportedLog] = useState<ConversationLog>();
   const [remoteInput, setRemoteInput] = useState<RankingInput>();
@@ -166,11 +167,12 @@ export function useIntentRanker() {
     activeRequest.current?.controller.abort();
     activeRequest.current = undefined;
     setIsProcessing(false);
+    setProcessingConversationId(undefined);
     setIsImporting(false);
   }
 
-  /** Starts a uniquely identified provider request, aborting any older request. */
-  function beginProviderRequest(): ActiveRequest {
+  /** Starts a uniquely identified provider request for one visible conversation. */
+  function beginProviderRequest(conversationId: string): ActiveRequest {
     activeRequest.current?.controller.abort();
     const request = {
       id: ++requestSequence.current,
@@ -178,6 +180,7 @@ export function useIntentRanker() {
     };
     activeRequest.current = request;
     setIsProcessing(true);
+    setProcessingConversationId(conversationId);
     return request;
   }
 
@@ -191,6 +194,7 @@ export function useIntentRanker() {
     if (!isCurrentRequest(request)) return;
     activeRequest.current = undefined;
     setIsProcessing(false);
+    setProcessingConversationId(undefined);
   }
 
   /** Records an imported or changed conversation before direct analysis starts. */
@@ -282,7 +286,7 @@ export function useIntentRanker() {
     const previousImportedLog = importedLog;
     const previousCustomMessages = customMessages;
     const comparisonInput = remoteInput ?? (importedLog ? undefined : scenario);
-    const request = beginProviderRequest();
+    const request = beginProviderRequest(log.conversationId);
 
     if (importedLog) setImportedLog(log);
     else setCustomMessages((current) => [...current, message]);
@@ -294,6 +298,7 @@ export function useIntentRanker() {
     setAcceptedInterpretationId("");
     try {
       const queuedTask = await enqueueConversation(log, selectedProvider);
+      setQueueRefreshRevision((revision) => revision + 1);
       const response = await requestRanking(
         log,
         selectedProvider,
@@ -308,6 +313,7 @@ export function useIntentRanker() {
       setRemoteResult(response.result);
       setPersistence(response.persistence);
       setAnalysisSource(response.provider);
+      setQueueRefreshRevision((revision) => revision + 1);
     } catch (caught) {
       if (!isCurrentRequest(request)) return;
       if (previousImportedLog) setImportedLog(previousImportedLog);
@@ -315,6 +321,7 @@ export function useIntentRanker() {
       setCustomMessage(text);
       setAnalysisError(caught instanceof Error ? caught.message : "Analysis failed.");
       setResultStale(true);
+      setQueueRefreshRevision((revision) => revision + 1);
     } finally {
       completeRequest(request);
     }
@@ -343,6 +350,8 @@ export function useIntentRanker() {
     fetch("/api/state", {
       method: "DELETE",
       headers: { [DEVICE_ID_HEADER]: getOrCreateDeviceId() },
+    }).then(() => {
+      setQueueRefreshRevision((revision) => revision + 1);
     }).catch(() => {
       // The visible reset remains useful; a later reload may restore state if archival is unavailable.
     });
@@ -384,13 +393,14 @@ export function useIntentRanker() {
 
   /** Calls the unified endpoint and promotes a validated import into the workbench. */
   async function handleImportedAnalysis(log: ConversationLog, provider: ProviderId) {
-    const request = beginProviderRequest();
+    const request = beginProviderRequest(log.conversationId);
     setIsImporting(true);
     setAnalysisError("");
     setOutcomeStatus("");
     setAcceptedInterpretationId("");
     try {
       const queuedTask = await enqueueConversation(log, provider);
+      setQueueRefreshRevision((revision) => revision + 1);
       const response = await requestRanking(
         log,
         provider,
@@ -409,10 +419,12 @@ export function useIntentRanker() {
       setAnalysisSource(response.provider);
       setSelectedId("");
       setConversationRename(undefined);
+      setQueueRefreshRevision((revision) => revision + 1);
     } catch (caught) {
       if (!isCurrentRequest(request)) return;
       setAnalysisError(caught instanceof Error ? caught.message : "Analysis failed.");
       setResultStale(true);
+      setQueueRefreshRevision((revision) => revision + 1);
     } finally {
       if (isCurrentRequest(request)) setIsImporting(false);
       completeRequest(request);
@@ -549,6 +561,7 @@ export function useIntentRanker() {
     weightPreset,
     selectedId,
     isProcessing,
+    processingConversationId,
     isImporting,
     importedLog,
     selectedProvider,

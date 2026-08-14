@@ -15,6 +15,8 @@ const ACTIVE_TASK_POLL_INTERVAL_MS = 3_000;
 
 type TaskSidebarProps = {
   activeConversationId?: string;
+  /** Identifies the pending queue record currently handled by a direct request. */
+  processingConversationId?: string;
   renamedConversation?: {
     currentConversationId: string;
     nextConversationId: string;
@@ -58,6 +60,7 @@ const STATUS_META: Record<
 /** Displays owner-scoped tasks as a collapsible navigation rail or full sidebar. */
 export function TaskSidebar({
   activeConversationId,
+  processingConversationId,
   renamedConversation,
   refreshKey,
   onSelectConversation,
@@ -237,11 +240,17 @@ export function TaskSidebar({
           )}
           <div className={expanded ? "divide-y" : "space-y-1.5"}>
             {tasks.map((task) => {
-              const status = STATUS_META[task.state];
               const renamed = renamedConversation?.currentConversationId === task.externalConversationId;
               const displayConversationId = renamed
                 ? renamedConversation.nextConversationId
                 : task.externalConversationId;
+              // A direct request leaves its recovery record pending until the
+              // result commits, but it is active work rather than waiting work.
+              const displayState =
+                task.state === "pending" && processingConversationId === displayConversationId
+                  ? "processing"
+                  : task.state;
+              const status = STATUS_META[displayState];
               const presentedTask: QueuedRankingTask = renamed
                 ? {
                     ...task,
@@ -344,7 +353,7 @@ export function TaskSidebar({
         {expanded && (
           <div className="shrink-0 space-y-2 border-t p-3">
             {error && <p role="alert" className="text-xs leading-4 text-destructive">{error}</p>}
-            {waitingCount > 0 && (
+            {waitingCount > 0 && !processingConversationId && (
               <Button
                 className="w-full"
                 size="sm"

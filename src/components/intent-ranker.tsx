@@ -72,6 +72,7 @@ export function IntentRanker() {
         <div className="flex min-h-[calc(100vh-64px)]">
           <TaskSidebar
             activeConversationId={workbench.importedLog?.conversationId}
+            processingConversationId={workbench.processingConversationId}
             renamedConversation={workbench.conversationRename}
             refreshKey={`${workbench.importedLog?.conversationId ?? "empty"}:${workbench.persistence?.state ?? "none"}:${workbench.queueRefreshRevision}`}
             onSelectConversation={workbench.handleSelectConversation}
