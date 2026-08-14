@@ -1,44 +1,12 @@
 "use client";
 
-/**
- * @file Stateful intent-ranking workbench and its focused presentation units.
- *
- * The client owns only ephemeral walkthrough state. Ranking decisions remain
- * deterministic domain logic, while CLI execution stays behind server routes.
- */
+/** @file Composes the intent-ranking workbench from focused workflow and panel modules. */
 
-import { useEffect, useMemo, useState } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  AiBrain03Icon,
-  Alert02Icon,
-  ArrowDown02Icon,
-  ArrowRight01Icon,
-  ArrowUp02Icon,
-  BotIcon,
-  GitCompareIcon,
-  InformationCircleIcon,
-  PlayIcon,
-  Refresh01Icon,
-  Settings01Icon,
-  SlidersHorizontalIcon,
-  SparklesIcon,
-  UserIcon,
-} from "@hugeicons/core-free-icons";
+import { AiBrain03Icon, Alert02Icon } from "@hugeicons/core-free-icons";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Select,
   SelectContent,
@@ -47,886 +15,127 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import { Slider } from "@/components/ui/slider";
-import { Textarea } from "@/components/ui/textarea";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import type { ProviderStatus } from "@/lib/providers/types";
-import { rankConversation } from "@/lib/ranking/engine";
-import {
-  DEFAULT_WEIGHTS,
-  getScenario,
-  SCENARIOS,
-  WEIGHT_PRESETS,
-} from "@/lib/ranking/scenarios";
-import type {
-  ConversationMessage,
-  RankedInterpretation,
-  RankingResult,
-  SignalKey,
-  SignalWeights,
-} from "@/lib/ranking/types";
-import { cn } from "@/lib/utils";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { SCENARIOS } from "@/lib/ranking/scenarios";
+import { ConversationPanel } from "./intent-ranker/conversation-panel";
+import { EvidencePanel } from "./intent-ranker/evidence-panel";
+import { ConversationImportDialog } from "./intent-ranker/import-dialog";
+import { RankingPanel } from "./intent-ranker/ranking-panel";
+import { ProviderSettings, WeightSettings } from "./intent-ranker/settings-dialogs";
+import { useIntentRanker } from "./intent-ranker/use-intent-ranker";
 
-const SIGNAL_META: Record<
-  SignalKey,
-  { label: string; shortLabel: string; color: string; dot: string }
-> = {
-  semantic: {
-    label: "Semantic similarity",
-    shortLabel: "Semantic",
-    color: "bg-sky-500",
-    dot: "bg-sky-500",
-  },
-  constraints: {
-    label: "Constraint consistency",
-    shortLabel: "Constraints",
-    color: "bg-primary",
-    dot: "bg-primary",
-  },
-  history: {
-    label: "Historical pattern",
-    shortLabel: "History",
-    color: "bg-violet-500",
-    dot: "bg-violet-500",
-  },
-};
-
-const SIGNAL_KEYS = Object.keys(SIGNAL_META) as SignalKey[];
-
-/** Formats a normalised value as a whole-number percentage for compact UI labels. */
-function percentage(value: number): string {
-  return `${Math.round(value * 100)}%`;
-}
-
-/** Returns positive movement for a rise in rank and negative movement for a fall. */
-function rankMovement(item: RankedInterpretation): number {
-  return item.previousRank ? item.previousRank - item.rank : 0;
-}
-
-/** Compact visual summary of the active ranking policy. */
-function WeightStrip({ weights }: { weights: SignalWeights }) {
-  const total = weights.semantic + weights.constraints + weights.history;
-
-  return (
-    <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-muted">
-      {SIGNAL_KEYS.map((key) => (
-        <div
-          key={key}
-          className={cn("h-full transition-[width] duration-300", SIGNAL_META[key].color)}
-          style={{ width: `${(weights[key] / total) * 100}%` }}
-        />
-      ))}
-    </div>
-  );
-}
-
-/** Visualises one independent signal without implying it is the final score. */
-function SignalBar({ signal, value }: { signal: SignalKey; value: number }) {
-  return (
-    <div className="grid grid-cols-[92px_1fr_34px] items-center gap-2.5">
-      <span className="text-[11px] font-medium text-muted-foreground">
-        {SIGNAL_META[signal].shortLabel}
-      </span>
-      <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-        <div
-          className={cn(
-            "h-full rounded-full transition-[width] duration-500",
-            SIGNAL_META[signal].color,
-          )}
-          style={{ width: percentage(value) }}
-        />
-      </div>
-      <span className="text-right font-mono text-[10px] font-semibold tabular-nums text-muted-foreground">
-        {percentage(value)}
-      </span>
-    </div>
-  );
-}
-
-/** Left rail: the exact conversational evidence processed so far. */
-function ConversationPanel({
-  messages,
-  totalFixtureMessages,
-  userName,
-  userRole,
-  isProcessing,
-  customMessage,
-  onCustomMessageChange,
-  onAddCustomMessage,
-  onProcessNext,
-  onReset,
-}: {
-  messages: ConversationMessage[];
-  totalFixtureMessages: number;
-  userName: string;
-  userRole: string;
-  isProcessing: boolean;
-  customMessage: string;
-  onCustomMessageChange: (value: string) => void;
-  onAddCustomMessage: () => void;
-  onProcessNext: () => void;
-  onReset: () => void;
-}) {
-  const fixtureMessagesRead = Math.min(messages.length, totalFixtureMessages);
-  const canProcessFixture = fixtureMessagesRead < totalFixtureMessages;
-
-  return (
-    <section className="flex min-h-[580px] flex-col overflow-hidden rounded-2xl border bg-card shadow-sm xl:h-[calc(100vh-104px)]">
-      <div className="border-b px-5 py-4">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="font-heading text-base font-semibold">Conversation</h2>
-          <Badge variant="secondary" className="rounded-full px-2.5 font-mono text-[10px]">
-            {fixtureMessagesRead}/{totalFixtureMessages} read
-          </Badge>
-        </div>
-
-        <div className="mt-4 flex items-center gap-3 rounded-xl border bg-muted/35 p-3">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-foreground text-background">
-            <HugeiconsIcon icon={UserIcon} className="size-4" strokeWidth={2} />
-          </div>
-          <div className="min-w-0">
-            <p className="truncate text-sm font-semibold">{userName}</p>
-            <p className="truncate text-xs text-muted-foreground">{userRole}</p>
-          </div>
-        </div>
-      </div>
-
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="space-y-4 p-5">
-          {messages.map((message, index) => (
-            <div
-              key={message.id}
-              className="animate-in fade-in slide-in-from-bottom-2 duration-300"
-            >
-              <div className="mb-1.5 flex items-center gap-2 px-1">
-                <span className="font-mono text-[10px] font-semibold text-muted-foreground">
-                  {message.id}
-                </span>
-                <span className="text-[10px] text-muted-foreground/70">{message.timestamp}</span>
-                {index === messages.length - 1 && (
-                  <Badge className="ml-auto h-5 rounded-full bg-primary/10 px-2 text-[9px] text-primary shadow-none">
-                    Latest
-                  </Badge>
-                )}
-              </div>
-              <div className="rounded-2xl rounded-tl-sm border bg-background px-4 py-3.5 text-[13px] leading-5 shadow-xs">
-                {message.text}
-              </div>
-            </div>
-          ))}
-
-          {isProcessing && (
-            <div
-              role="status"
-              aria-live="polite"
-              className="flex items-center gap-2 px-1 py-2 text-xs text-muted-foreground"
-            >
-              <span className="flex gap-1">
-                {[0, 1, 2].map((dot) => (
-                  <span
-                    key={dot}
-                    className="size-1.5 animate-pulse rounded-full bg-primary"
-                    style={{ animationDelay: `${dot * 120}ms` }}
-                  />
-                ))}
-              </span>
-              Updating evidence and scores…
-            </div>
-          )}
-        </div>
-      </ScrollArea>
-
-      <div className="space-y-3 border-t bg-muted/20 p-4">
-        {canProcessFixture ? (
-          <Button
-            className="w-full rounded-xl"
-            onClick={onProcessNext}
-            disabled={isProcessing}
-          >
-            <HugeiconsIcon icon={PlayIcon} className="size-4" strokeWidth={2} />
-            Process next message
-          </Button>
-        ) : (
-          <div className="relative">
-            <Textarea
-              aria-label="Add a follow-up message"
-              value={customMessage}
-              onChange={(event) => onCustomMessageChange(event.target.value)}
-              placeholder="Add a follow-up to test the ranking…"
-              className="min-h-20 resize-none rounded-xl bg-background pr-12 text-xs"
-            />
-            <Button
-              aria-label="Add follow-up message"
-              size="icon"
-              className="absolute right-2 bottom-2 size-8 rounded-lg"
-              onClick={onAddCustomMessage}
-              disabled={!customMessage.trim()}
-            >
-              <HugeiconsIcon icon={ArrowRight01Icon} className="size-4" strokeWidth={2} />
-            </Button>
-          </div>
-        )}
-        <button
-          type="button"
-          onClick={onReset}
-          className="flex w-full items-center justify-center gap-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground"
-        >
-          <HugeiconsIcon icon={Refresh01Icon} className="size-3.5" strokeWidth={2} />
-          Reset conversation
-        </button>
-      </div>
-    </section>
-  );
-}
-
-/** Renders one selectable candidate with confidence, evidence scores, and movement. */
-function InterpretationCard({
-  item,
-  selected,
-  onSelect,
-}: {
-  item: RankedInterpretation;
-  selected: boolean;
-  onSelect: () => void;
-}) {
-  const movement = rankMovement(item);
-
-  return (
-    <button
-      type="button"
-      aria-pressed={selected}
-      onClick={onSelect}
-      className={cn(
-        "group w-full rounded-2xl border bg-card p-4 text-left shadow-xs transition-all duration-200",
-        "hover:-translate-y-0.5 hover:border-foreground/20 hover:shadow-md",
-        selected && "border-primary/60 ring-3 ring-primary/8",
-      )}
-    >
-      <div className="flex items-start gap-3.5">
-        <div
-          className={cn(
-            "flex size-9 shrink-0 items-center justify-center rounded-xl border font-heading text-sm font-bold",
-            item.rank === 1
-              ? "border-primary/20 bg-primary text-primary-foreground"
-              : "bg-muted text-muted-foreground",
-          )}
-        >
-          {item.rank}
-        </div>
-
-        <div className="min-w-0 flex-1">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h3 className="font-heading text-sm font-semibold leading-5">{item.title}</h3>
-              <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
-                {item.summary}
-              </p>
-            </div>
-            <div className="shrink-0 text-right">
-              <p className="font-heading text-xl font-semibold tracking-tight tabular-nums">
-                {percentage(item.confidence)}
-              </p>
-              <p className="text-[9px] font-semibold tracking-wider text-muted-foreground uppercase">
-                confidence
-              </p>
-            </div>
-          </div>
-
-          <div className="mt-3 space-y-2">
-            {SIGNAL_KEYS.map((signal) => (
-              <SignalBar key={signal} signal={signal} value={item.signals[signal]} />
-            ))}
-          </div>
-
-          <div className="mt-3 flex items-center justify-between border-t pt-2.5">
-            {movement !== 0 ? (
-              <span
-                className={cn(
-                  "flex items-center gap-1 text-[10px] font-semibold",
-                  movement > 0 ? "text-emerald-700" : "text-rose-700",
-                )}
-              >
-                <HugeiconsIcon
-                  icon={movement > 0 ? ArrowUp02Icon : ArrowDown02Icon}
-                  className="size-3"
-                  strokeWidth={2.4}
-                />
-                {Math.abs(movement)} place{Math.abs(movement) === 1 ? "" : "s"}
-              </span>
-            ) : (
-              <span className="text-[10px] text-muted-foreground">Rank unchanged</span>
-            )}
-            <span className="font-mono text-[10px] text-muted-foreground">
-              weighted score {item.total.toFixed(3)}
-            </span>
-          </div>
-        </div>
-      </div>
-    </button>
-  );
-}
-
-/** Middle column: ranked candidates and the immediately visible decision state. */
-function RankingPanel({
-  result,
-  selectedId,
-  onSelect,
-}: {
-  result: RankingResult;
-  selectedId: string;
-  onSelect: (id: string) => void;
-}) {
-  const winner = result.ranking[0];
-  const movement = rankMovement(winner);
-
-  return (
-    <section className="min-w-0">
-      <div className="mb-4 flex items-end justify-between gap-4">
-        <div className="flex items-center gap-2">
-          <h2 className="font-heading text-2xl font-semibold tracking-tight">
-            Three plausible readings
-          </h2>
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <button
-                  type="button"
-                  aria-label="About confidence scores"
-                  className="text-muted-foreground hover:text-foreground"
-                />
-              }
-            >
-              <HugeiconsIcon icon={InformationCircleIcon} className="size-3.5" strokeWidth={2} />
-            </TooltipTrigger>
-            <TooltipContent className="max-w-64 text-xs">
-              Relative confidence compares the weighted evidence for these readings. It
-              is not a probability of user intent.
-            </TooltipContent>
-          </Tooltip>
-        </div>
-        <Badge
-          variant="outline"
-          className={cn(
-            "h-7 rounded-full px-3 text-[10px] font-semibold",
-            result.uncertain
-              ? "border-amber-300 bg-amber-50 text-amber-800"
-              : "border-emerald-200 bg-emerald-50 text-emerald-800",
-          )}
-        >
-          <span
-            className={cn(
-              "mr-1.5 size-1.5 rounded-full",
-              result.uncertain ? "bg-amber-500" : "bg-emerald-500",
-            )}
-          />
-          {result.uncertain ? "Human review" : "Decision ready"}
-        </Badge>
-      </div>
-
-      {movement > 0 && (
-        <div
-          role="status"
-          aria-live="polite"
-          className="mb-3 flex items-center gap-3 rounded-xl border border-primary/20 bg-primary/[0.055] px-4 py-3 text-xs text-foreground"
-        >
-          <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-            <HugeiconsIcon icon={GitCompareIcon} className="size-4" strokeWidth={2} />
-          </div>
-          <p className="leading-5">
-            <span className="font-semibold">Ranking shifted.</span> “{winner.title}” moved
-            from #{winner.previousRank} to #1 after the latest message.
-          </p>
-        </div>
-      )}
-
-      <div className="space-y-3">
-        {result.ranking.map((item) => (
-          <InterpretationCard
-            key={item.id}
-            item={item}
-            selected={selectedId === item.id}
-            onSelect={() => onSelect(item.id)}
-          />
-        ))}
-      </div>
-    </section>
-  );
-}
-
-/** Right rail: a faithful explanation assembled from the computed evidence. */
-function EvidencePanel({
-  result,
-  selected,
-}: {
-  result: RankingResult;
-  selected: RankedInterpretation;
-}) {
-  return (
-    <aside className="space-y-3 xl:sticky xl:top-[88px] xl:self-start">
-      <Card className="gap-0 overflow-hidden rounded-2xl py-0 shadow-sm">
-        <CardHeader className="border-b bg-muted/25 px-4 py-4">
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="font-heading text-sm font-semibold">Why this ranking?</h2>
-            <div className="flex size-8 items-center justify-center rounded-lg bg-foreground text-background">
-              <HugeiconsIcon icon={SparklesIcon} className="size-4" strokeWidth={2} />
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4 px-4 py-4">
-          <p className="text-[12px] leading-[1.65] text-foreground/85">{result.explanation}</p>
-
-          {result.reframes.length > 0 && (
-            <div className="rounded-xl border border-violet-200 bg-violet-50/70 p-3.5">
-              <div className="flex items-center gap-2 text-violet-900">
-                <HugeiconsIcon icon={GitCompareIcon} className="size-4" strokeWidth={2} />
-                <p className="text-[11px] font-semibold">Reframe detected</p>
-              </div>
-              <p className="mt-2 text-[11px] leading-4 text-violet-900/75">
-                {result.reframes[0].summary} The newer message is retained in the audit
-                trail while the earlier constraint is marked superseded.
-              </p>
-            </div>
-          )}
-
-          {result.uncertain && (
-            <Alert className="rounded-xl border-amber-200 bg-amber-50/70 text-amber-950">
-              <HugeiconsIcon icon={Alert02Icon} className="size-4" strokeWidth={2} />
-              <AlertTitle className="text-xs font-semibold">Ask before acting</AlertTitle>
-              <AlertDescription className="text-[11px] leading-4 text-amber-900/80">
-                {result.uncertaintyReason} Ask: “Should this be a reusable live view or a
-                report delivered each Monday?”
-              </AlertDescription>
-            </Alert>
-          )}
-
-          <Separator />
-
-          <div>
-            <div className="mb-3 flex items-center justify-between">
-              <h3 className="text-xs font-semibold text-muted-foreground">
-                Evidence for #{selected.rank}
-              </h3>
-              <span className="font-mono text-[10px] text-muted-foreground">
-                {selected.evidence.length} signals
-              </span>
-            </div>
-            <div className="space-y-2.5">
-              {selected.evidence.slice(0, 6).map((evidence, index) => (
-                <div key={`${evidence.kind}-${index}`} className="flex gap-2.5">
-                  <span
-                    className={cn(
-                      "mt-1.5 size-1.5 shrink-0 rounded-full",
-                      evidence.sentiment === "conflicts"
-                        ? "bg-rose-500"
-                        : evidence.kind === "reframe"
-                          ? "bg-violet-500"
-                          : SIGNAL_META[evidence.kind as SignalKey]?.dot ?? "bg-muted",
-                    )}
-                  />
-                  <div>
-                    <p className="text-[11px] leading-4 text-foreground/85">{evidence.text}</p>
-                    <p className="mt-0.5 text-[9px] font-medium text-muted-foreground">
-                      {evidence.messageId ? `${evidence.messageId} · ` : ""}
-                      {evidence.kind === "history"
-                        ? "Accepted task history"
-                        : evidence.kind === "constraints"
-                          ? evidence.sentiment === "conflicts"
-                            ? "Constraint conflict"
-                            : "Constraint match"
-                          : "Language match"}
-                    </p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-    </aside>
-  );
-}
-
-/** Allows users to choose a documented policy preset or tune each signal weight. */
-function WeightSettings({
-  weights,
-  preset,
-  onPresetChange,
-  onWeightChange,
-  onReset,
-}: {
-  weights: SignalWeights;
-  preset: string;
-  onPresetChange: (value: string) => void;
-  onWeightChange: (key: SignalKey, value: number) => void;
-  onReset: () => void;
-}) {
-  return (
-    <Dialog>
-      <DialogTrigger
-        render={<Button variant="outline" size="sm" className="rounded-full bg-background" />}
-      >
-        <HugeiconsIcon icon={SlidersHorizontalIcon} className="size-4" strokeWidth={2} />
-        Weights
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-[520px]">
-        <DialogHeader>
-          <DialogTitle className="font-heading">Ranking policy</DialogTitle>
-          <DialogDescription>
-            Tune influence without removing any of the three required evidence axes.
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="space-y-5 pt-2">
-          <div>
-            <label className="mb-2 block text-xs font-semibold" htmlFor="weight-profile">
-              Preset
-            </label>
-            <Select value={preset} onValueChange={(value) => onPresetChange(String(value))}>
-              <SelectTrigger
-                id="weight-profile"
-                aria-label="Weight preset"
-                className="w-full rounded-xl bg-muted/60"
-              >
-                <SelectValue>{WEIGHT_PRESETS[preset]?.label ?? "Custom"}</SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                {Object.entries(WEIGHT_PRESETS).map(([key, item]) => (
-                  <SelectItem key={key} value={key}>
-                    {item.label}
-                  </SelectItem>
-                ))}
-                <SelectItem value="custom">Custom</SelectItem>
-              </SelectContent>
-            </Select>
-            <p className="mt-2 text-[11px] text-muted-foreground">
-              {WEIGHT_PRESETS[preset]?.description ??
-                "A custom profile is active. Values are normalised at scoring time."}
-            </p>
-          </div>
-
-          <WeightStrip weights={weights} />
-
-          <div className="space-y-5">
-            {SIGNAL_KEYS.map((key) => (
-              <div key={key}>
-                <div className="mb-2 flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className={cn("size-2 rounded-full", SIGNAL_META[key].dot)} />
-                    <span className="text-xs font-semibold">{SIGNAL_META[key].label}</span>
-                  </div>
-                  <span className="font-mono text-xs font-semibold tabular-nums">
-                    {weights[key]}%
-                  </span>
-                </div>
-                <Slider
-                  aria-label={`${SIGNAL_META[key].label} weight`}
-                  min={10}
-                  max={70}
-                  step={5}
-                  value={[weights[key]]}
-                  onValueChange={(value) => {
-                    const nextValue = Array.isArray(value) ? value[0] : value;
-                    onWeightChange(key, Number(nextValue));
-                  }}
-                />
-              </div>
-            ))}
-          </div>
-
-          <Alert className="rounded-xl bg-muted/35">
-            <HugeiconsIcon icon={InformationCircleIcon} className="size-4" strokeWidth={2} />
-            <AlertTitle className="text-xs">Confidence remains guarded</AlertTitle>
-            <AlertDescription className="text-[11px] leading-4">
-              Editing weights changes ranking influence, but explicit conflicts remain visible
-              and close outcomes still trigger human review.
-            </AlertDescription>
-          </Alert>
-
-          <Button variant="outline" className="w-full rounded-xl" onClick={onReset}>
-            <HugeiconsIcon icon={Refresh01Icon} className="size-4" strokeWidth={2} />
-            Restore system defaults
-          </Button>
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-/** Explains the adapter boundary and reports locally available providers. */
-function ProviderSettings({ providers }: { providers: ProviderStatus[] }) {
-  return (
-    <Dialog>
-      <DialogTrigger
-        render={
-          <Button
-            variant="ghost"
-            size="icon"
-            className="rounded-full"
-            aria-label="Provider settings"
-          />
-        }
-      >
-        <HugeiconsIcon icon={Settings01Icon} className="size-4" strokeWidth={2} />
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-[520px]">
-        <DialogHeader>
-          <DialogTitle className="font-heading">Local provider adapters</DialogTitle>
-          <DialogDescription>
-            Candidate extraction is swappable; scoring and abstention remain application-owned.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-2 pt-2">
-          {providers.map((provider) => (
-            <div
-              key={provider.id}
-              className="flex items-center gap-3 rounded-xl border bg-muted/20 p-3.5"
-            >
-              <div
-                className={cn(
-                  "flex size-9 items-center justify-center rounded-lg",
-                  provider.available
-                    ? "bg-primary/10 text-primary"
-                    : "bg-muted text-muted-foreground",
-                )}
-              >
-                <HugeiconsIcon
-                  icon={provider.id === "demo" ? AiBrain03Icon : BotIcon}
-                  className="size-4"
-                  strokeWidth={2}
-                />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <p className="text-xs font-semibold">{provider.name}</p>
-                  {provider.id === "demo" && (
-                    <Badge className="h-5 rounded-full bg-primary/10 text-[9px] text-primary shadow-none">
-                      Active
-                    </Badge>
-                  )}
-                </div>
-                <p className="mt-0.5 truncate text-[10px] text-muted-foreground">
-                  {provider.detail}
-                </p>
-              </div>
-              <span
-                className={cn(
-                  "size-2 rounded-full",
-                  provider.available ? "bg-emerald-500" : "bg-muted-foreground/40",
-                )}
-              />
-            </div>
-          ))}
-        </div>
-        <p className="text-[11px] leading-5 text-muted-foreground">
-          The walkthrough uses deterministic fixtures so it works without an account. The
-          documented API route can ask an installed Codex CLI—or Codex with Ollama—to
-          generate live structured candidates.
-        </p>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-/**
- * Main interactive workbench. State is client-side for a reliable demo, while
- * local CLI candidate generation is exposed independently through an API route.
- */
+/** Main interactive workbench for fixture and imported conversation analysis. */
 export function IntentRanker() {
-  const [scenarioId, setScenarioId] = useState(SCENARIOS[0].id);
-  const [visibleMessageCount, setVisibleMessageCount] = useState(2);
-  const [customMessages, setCustomMessages] = useState<ConversationMessage[]>([]);
-  const [customMessage, setCustomMessage] = useState("");
-  const [weights, setWeights] = useState<SignalWeights>(DEFAULT_WEIGHTS);
-  const [weightPreset, setWeightPreset] = useState("explicit");
-  const [selectedId, setSelectedId] = useState("");
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [providers, setProviders] = useState<ProviderStatus[]>([
-    {
-      id: "demo",
-      name: "Deterministic demo",
-      available: true,
-      localInference: true,
-      detail: "No account or network required",
-    },
-  ]);
-
-  const scenario = getScenario(scenarioId);
-  const messages = useMemo(
-    () => [...scenario.messages.slice(0, visibleMessageCount), ...customMessages],
-    [scenario, visibleMessageCount, customMessages],
-  );
-  const result = useMemo(
-    () => rankConversation(scenario, messages, weights),
-    [scenario, messages, weights],
-  );
-  const selected =
-    result.ranking.find((item) => item.id === selectedId) ?? result.ranking[0];
-
-  useEffect(() => {
-    fetch("/api/providers")
-      .then((response) => response.json())
-      .then((data: { providers?: ProviderStatus[] }) => {
-        if (data.providers) setProviders(data.providers);
-      })
-      .catch(() => {
-        // Discovery is optional; the deterministic demo remains usable.
-      });
-  }, []);
-
-  /** Resets transient state when the walkthrough moves to another fixture. */
-  function handleScenarioChange(value: string) {
-    setScenarioId(value);
-    setVisibleMessageCount(2);
-    setCustomMessages([]);
-    setCustomMessage("");
-    setSelectedId("");
-  }
-
-  /** Reveals the next fixture message after a short, legible processing state. */
-  function handleProcessNext() {
-    if (visibleMessageCount >= scenario.messages.length || isProcessing) return;
-    setIsProcessing(true);
-    window.setTimeout(() => {
-      setSelectedId("");
-      setVisibleMessageCount((count) => count + 1);
-      setIsProcessing(false);
-    }, 650);
-  }
-
-  /** Appends a non-persistent user message and recalculates the ranking. */
-  function handleAddCustomMessage() {
-    const text = customMessage.trim();
-    if (!text) return;
-    setCustomMessages((current) => [
-      ...current,
-      {
-        id: `M${scenario.messages.length + current.length + 1}`,
-        author: "user",
-        text,
-        timestamp: new Date().toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-        }),
-      },
-    ]);
-    setSelectedId("");
-    setCustomMessage("");
-  }
-
-  /** Restores the selected scenario to its first two fixture messages. */
-  function handleReset() {
-    setVisibleMessageCount(2);
-    setCustomMessages([]);
-    setCustomMessage("");
-    setSelectedId("");
-  }
-
-  /** Applies a named weighting policy while retaining all three scoring axes. */
-  function handlePresetChange(value: string) {
-    setWeightPreset(value);
-    if (WEIGHT_PRESETS[value]) setWeights(WEIGHT_PRESETS[value].weights);
-    setSelectedId("");
-  }
-
-  /** Updates one raw weight; the engine normalises all weights before scoring. */
-  function handleWeightChange(key: SignalKey, value: number) {
-    setWeightPreset("custom");
-    setWeights((current) => ({ ...current, [key]: value }));
-    setSelectedId("");
-  }
-
-  /** Restores the system policy that prioritises explicit constraints. */
-  function restoreWeights() {
-    setWeights(DEFAULT_WEIGHTS);
-    setWeightPreset("explicit");
-    setSelectedId("");
-  }
+  const workbench = useIntentRanker();
 
   return (
     <TooltipProvider>
       <div className="min-h-screen bg-muted/25">
-      <header className="sticky top-0 z-40 border-b bg-background/92 backdrop-blur-xl">
-        <div className="mx-auto flex h-16 max-w-[1720px] items-center gap-4 px-4 sm:px-6">
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="relative flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-foreground text-background shadow-sm">
-              <HugeiconsIcon icon={AiBrain03Icon} className="size-[18px]" strokeWidth={2} />
-              <span className="absolute right-1 bottom-1 size-1.5 rounded-full bg-primary ring-2 ring-foreground" />
+        <header className="sticky top-0 z-40 border-b bg-background/92 backdrop-blur-xl">
+          <div className="mx-auto flex h-16 max-w-[1720px] items-center gap-4 px-4 sm:px-6">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="relative flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-foreground text-background shadow-sm">
+                <HugeiconsIcon icon={AiBrain03Icon} className="size-[18px]" strokeWidth={2} />
+                <span className="absolute right-1 bottom-1 size-1.5 rounded-full bg-primary ring-2 ring-foreground" />
+              </div>
+              <div className="hidden sm:block">
+                <p className="font-heading text-sm font-semibold tracking-tight">Resolve</p>
+              </div>
             </div>
-            <div className="hidden sm:block">
-              <p className="font-heading text-sm font-semibold tracking-tight">Resolve</p>
-            </div>
-          </div>
 
-          <Separator orientation="vertical" className="mx-1 hidden h-6 sm:block" />
+            <Separator orientation="vertical" className="mx-1 hidden h-6 sm:block" />
 
-          <Select
-            value={scenarioId}
-            onValueChange={(value) => handleScenarioChange(String(value))}
-          >
-            <SelectTrigger
-              aria-label="Demo scenario"
-              className="min-w-0 flex-1 rounded-full bg-muted/60 sm:max-w-[330px]"
+            <Select
+              value={workbench.scenarioId}
+              onValueChange={(value) => workbench.handleScenarioChange(String(value))}
             >
-              <SelectValue>{scenario.shortTitle}</SelectValue>
-            </SelectTrigger>
-            <SelectContent align="start">
-              {SCENARIOS.map((item) => (
-                <SelectItem key={item.id} value={item.id}>
-                  {item.shortTitle}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+              <SelectTrigger
+                aria-label="Demo scenario"
+                className="min-w-0 flex-1 rounded-full bg-muted/60 sm:max-w-[330px]"
+              >
+                <SelectValue>{workbench.scenario.shortTitle}</SelectValue>
+              </SelectTrigger>
+              <SelectContent align="start">
+                {SCENARIOS.map((item) => (
+                  <SelectItem key={item.id} value={item.id}>
+                    {item.shortTitle}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
 
-          <div className="ml-auto flex items-center gap-2">
-            <WeightSettings
-              weights={weights}
-              preset={weightPreset}
-              onPresetChange={handlePresetChange}
-              onWeightChange={handleWeightChange}
-              onReset={restoreWeights}
-            />
-            <ProviderSettings providers={providers} />
+            <div className="ml-auto flex items-center gap-2">
+              <ConversationImportDialog
+                providers={workbench.providers}
+                provider={workbench.selectedProvider}
+                onProviderChange={workbench.setSelectedProvider}
+                onAnalyze={workbench.handleImportedAnalysis}
+              />
+              <WeightSettings
+                weights={workbench.weights}
+                preset={workbench.weightPreset}
+                onPresetChange={workbench.handlePresetChange}
+                onWeightChange={workbench.handleWeightChange}
+                onReset={workbench.restoreWeights}
+              />
+              <ProviderSettings
+                providers={workbench.providers}
+                selectedProvider={workbench.selectedProvider}
+              />
+            </div>
           </div>
-        </div>
-      </header>
+        </header>
 
-      <main className="workspace-grid min-h-[calc(100vh-64px)]">
-        <div className="mx-auto max-w-[1720px] px-4 py-5 sm:px-6">
-          <div className="mb-5">
-            <div>
+        <main className="workspace-grid min-h-[calc(100vh-64px)]">
+          <div className="mx-auto max-w-[1720px] px-4 py-5 sm:px-6">
+            <div className="mb-5">
               <h1 className="font-heading text-xl font-semibold tracking-tight sm:text-2xl">
-                {scenario.title}
+                {workbench.importedLog ? "Imported conversation" : workbench.scenario.title}
               </h1>
               <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">
-                {scenario.description}
+                {workbench.importedLog
+                  ? `${workbench.importedLog.messages.length} messages supplied for ${workbench.importedLog.userId}.`
+                  : workbench.scenario.description}
               </p>
+              <Badge variant="outline" className="mt-2 rounded-full text-[10px]">
+                Analyzed by {workbench.analysisSource?.name ?? "Deterministic fixture"}
+              </Badge>
+            </div>
+
+            {workbench.analysisError && (
+              <Alert role="alert" className="mb-4 border-rose-200 bg-rose-50 text-rose-950">
+                <HugeiconsIcon icon={Alert02Icon} className="size-4" strokeWidth={2} />
+                <AlertTitle>Analysis could not be completed</AlertTitle>
+                <AlertDescription>{workbench.analysisError}</AlertDescription>
+              </Alert>
+            )}
+
+            <div className="grid items-start gap-5 xl:grid-cols-[330px_minmax(460px,1fr)_320px] 2xl:grid-cols-[360px_minmax(560px,1fr)_350px]">
+              <ConversationPanel
+                messages={workbench.messages}
+                totalFixtureMessages={
+                  workbench.importedLog
+                    ? workbench.messages.length
+                    : workbench.scenario.messages.length
+                }
+                userName={workbench.importedLog?.userId ?? workbench.scenario.userName}
+                userRole={workbench.importedLog?.domain?.name ?? workbench.scenario.userRole}
+                isProcessing={workbench.isProcessing}
+                customMessage={workbench.customMessage}
+                onCustomMessageChange={workbench.setCustomMessage}
+                onAddCustomMessage={workbench.handleAddCustomMessage}
+                onProcessNext={workbench.handleProcessNext}
+                onReset={workbench.handleReset}
+              />
+              <RankingPanel
+                result={workbench.result}
+                selectedId={workbench.selected.id}
+                onSelect={workbench.setSelectedId}
+              />
+              <EvidencePanel result={workbench.result} selected={workbench.selected} />
             </div>
           </div>
-
-          <div className="grid items-start gap-5 xl:grid-cols-[330px_minmax(460px,1fr)_320px] 2xl:grid-cols-[360px_minmax(560px,1fr)_350px]">
-            <ConversationPanel
-              messages={messages}
-              totalFixtureMessages={scenario.messages.length}
-              userName={scenario.userName}
-              userRole={scenario.userRole}
-              isProcessing={isProcessing}
-              customMessage={customMessage}
-              onCustomMessageChange={setCustomMessage}
-              onAddCustomMessage={handleAddCustomMessage}
-              onProcessNext={handleProcessNext}
-              onReset={handleReset}
-            />
-            <RankingPanel result={result} selectedId={selected.id} onSelect={setSelectedId} />
-            <EvidencePanel result={result} selected={selected} />
-          </div>
-        </div>
-      </main>
+        </main>
       </div>
     </TooltipProvider>
   );

@@ -9,7 +9,34 @@ import { describe, expect, it } from "vitest";
 
 import { extractConstraints, rankConversation } from "./engine";
 import { DEFAULT_WEIGHTS, getScenario } from "./scenarios";
-import type { ConstraintRule, ConversationMessage } from "./types";
+import type {
+  ConstraintRule,
+  ConversationMessage,
+} from "./types";
+
+/** Builds a timestamped role-neutral message for focused extraction tests. */
+function message(id: string, text: string): ConversationMessage {
+  return { id, text, timestamp: `2026-08-14T09:0${id.slice(1)}:00.000Z` };
+}
+
+/** Builds an inspectable rule without repeating defaults in each regression. */
+function rule(
+  id: string,
+  phrase: string,
+  dimension: string,
+  value: string,
+  mode: ConstraintRule["mode"] = "require",
+): ConstraintRule {
+  return {
+    id,
+    phrases: [phrase],
+    dimension,
+    value,
+    mode,
+    strength: 1,
+    label: `${mode} ${dimension}:${value}`,
+  };
+}
 
 describe("rankConversation", () => {
   it("ranks the review deck first before the user reframes the task", () => {
@@ -32,6 +59,210 @@ describe("rankConversation", () => {
     expect(result.ranking[0].previousRank).toBeGreaterThan(1);
     expect(result.reframes.length).toBeGreaterThan(0);
     expect(result.explanation).toContain("replacing");
+  });
+
+  it("preserves every previous score and returns per-axis, total, confidence, and rank deltas", () => {
+    const scenario = getScenario("finance-reframe");
+    const result = rankConversation(scenario, scenario.messages, DEFAULT_WEIGHTS);
+
+    expect(result.ranking).toHaveLength(3);
+    result.ranking.forEach((candidate) => {
+      expect(candidate.previous).toEqual(
+        expect.objectContaining({
+          rank: expect.any(Number),
+          signals: expect.objectContaining({
+            semantic: expect.any(Number),
+            constraints: expect.any(Number),
+            history: expect.any(Number),
+          }),
+          total: expect.any(Number),
+          confidence: expect.any(Number),
+        }),
+      );
+      expect(candidate.deltas).toEqual(
+        expect.objectContaining({
+          semantic: expect.any(Number),
+          constraints: expect.any(Number),
+          history: expect.any(Number),
+          total: expect.any(Number),
+          confidence: expect.any(Number),
+          rank: expect.any(Number),
+        }),
+      );
+      expect(candidate.change?.messageId).toBe("M3");
+      expect(candidate.explanation).toContain(`#${candidate.rank}`);
+    });
+  });
+
+  it("explains the previous winner falling, the new winner rising, and the selected weight", () => {
+    const scenario = getScenario("finance-reframe");
+    const result = rankConversation(scenario, scenario.messages, DEFAULT_WEIGHTS);
+
+    expect(result.rankingChange).toMatchObject({
+      messageId: "M3",
+      winnerChanged: true,
+      previousWinner: { id: "slide-deck" },
+      currentWinner: { id: "csv-export" },
+    });
+    expect(result.rankingChange?.previousWinnerExplanation).toContain("fell");
+    expect(result.rankingChange?.currentWinnerExplanation).toContain("rose");
+    expect(result.mostInfluentialAxis).toMatchObject({
+      key: "constraints",
+      weight: 0.5,
+    });
+    expect(result.mostInfluentialAxis.explanation).toContain("explicit instructions");
+  });
+
+  it("does not claim the winner rose or fell when it remains first", () => {
+    const scenario = getScenario("weekly-ambiguity");
+    const result = rankConversation(scenario, scenario.messages, DEFAULT_WEIGHTS);
+
+    expect(result.rankingChange).toMatchObject({ winnerChanged: false });
+    expect(result.rankingChange?.previousWinnerExplanation).not.toContain("fell");
+    expect(result.rankingChange?.currentWinnerExplanation).not.toContain("rose");
+    expect(result.rankingChange?.currentWinnerExplanation).toContain("remained #1");
+  });
+
+  it("scores only messages from the current task after a provider boundary", () => {
+    const result = rankConversation(
+      {
+        interpretations: [
+          {
+            id: "database",
+            title: "Investigate the database",
+            summary: "Diagnose replication lag and prepare a runbook.",
+            semanticTerms: ["replication", "database", "diagnostics", "runbook"],
+            features: ["topic:database"],
+          },
+          {
+            id: "poem",
+            title: "Write a poem",
+            summary: "Write the newly requested poem.",
+            semanticTerms: ["poem", "verse", "rhyme", "stanza"],
+            features: ["topic:poem"],
+          },
+          {
+            id: "checklist",
+            title: "Create a checklist",
+            summary: "Create an unrelated checklist.",
+            semanticTerms: ["checklist", "steps", "tasks", "items"],
+            features: ["topic:checklist"],
+          },
+        ],
+        constraintRules: [],
+        history: [],
+        taskBoundaries: [{ messageId: "M2", reason: "The user requested a new task." }],
+      },
+      [
+        message("M1", "Investigate replication database diagnostics and write a runbook."),
+        message("M2", "Write a poem."),
+      ],
+      { semantic: 100, constraints: 0, history: 0 },
+    );
+
+    expect(result.ranking[0].id).toBe("poem");
+    expect(
+      result.ranking.find((candidate) => candidate.id === "database")?.evidence,
+    ).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ messageId: "M1", kind: "semantic" }),
+      ]),
+    );
+  });
+
+  it("compares a follow-up with the candidate catalogue shown by the prior run", () => {
+    const previousInput = {
+      interpretations: [
+        {
+          id: "database",
+          title: "Investigate the database",
+          summary: "Diagnose replication lag and prepare a runbook.",
+          semanticTerms: ["replication lag", "database", "diagnostics", "runbook"],
+          features: ["topic:database"],
+        },
+        {
+          id: "status-page",
+          title: "Update the status page",
+          summary: "Publish a database incident update.",
+          semanticTerms: ["status page", "incident", "update", "database"],
+          features: ["topic:status-page"],
+        },
+        {
+          id: "capacity-plan",
+          title: "Prepare a capacity plan",
+          summary: "Plan database capacity changes.",
+          semanticTerms: ["capacity", "plan", "database", "scaling"],
+          features: ["topic:capacity"],
+        },
+      ],
+      constraintRules: [],
+      history: [],
+    };
+    const currentInput = {
+      interpretations: [
+        {
+          id: "poem",
+          title: "Write a poem",
+          summary: "Write the newly requested poem.",
+          semanticTerms: ["poem", "verse", "rhyme", "stanza"],
+          features: ["topic:poem"],
+        },
+        {
+          id: "story",
+          title: "Write a story",
+          summary: "Write a short fictional story.",
+          semanticTerms: ["story", "fiction", "character", "plot"],
+          features: ["topic:story"],
+        },
+        {
+          id: "speech",
+          title: "Write a speech",
+          summary: "Write a concise speech.",
+          semanticTerms: ["speech", "remarks", "audience", "talk"],
+          features: ["topic:speech"],
+        },
+      ],
+      constraintRules: [],
+      history: [],
+      taskBoundaries: [{ messageId: "M2", reason: "The user replaced the database task." }],
+    };
+    const result = rankConversation(
+      currentInput,
+      [
+        message("M1", "Investigate database replication lag and prepare a diagnostic runbook."),
+        message("M2", "Write a poem with rhyme and four short stanzas."),
+      ],
+      { semantic: 100, constraints: 0, history: 0 },
+      previousInput,
+    );
+
+    expect(result.rankingChange).toMatchObject({
+      winnerChanged: true,
+      previousWinner: { id: "database" },
+      currentWinner: { id: "poem" },
+    });
+    expect(result.rankingChange?.previousWinnerExplanation).toContain(
+      "no longer returned",
+    );
+    expect(result.rankingChange?.currentWinnerExplanation).toContain(
+      "newly introduced",
+    );
+    expect(result.ranking.every((candidate) => candidate.previous === undefined)).toBe(true);
+  });
+
+  it("separates changed evidence from evidence that remained applicable", () => {
+    const scenario = getScenario("finance-reframe");
+    const result = rankConversation(scenario, scenario.messages, DEFAULT_WEIGHTS);
+    const csv = result.ranking.find((candidate) => candidate.id === "csv-export")!;
+
+    expect(csv.change?.addedEvidence.some((evidence) => evidence.messageId === "M3")).toBe(true);
+    expect(csv.change?.unchangedEvidence).toEqual(expect.any(Array));
+    expect(csv.evidence.some((evidence) => evidence.sentiment === "supports")).toBe(true);
+    expect(
+      result.ranking
+        .find((candidate) => candidate.id === "slide-deck")
+        ?.evidence.some((evidence) => evidence.sentiment === "conflicts"),
+    ).toBe(true);
   });
 
   it("flags the deliberately ambiguous weekly request for human review", () => {
@@ -95,7 +326,7 @@ describe("rankConversation", () => {
       },
     ];
     const result = rankConversation(
-      { ...scenario, messages, constraintRules: rules },
+      { ...scenario, constraintRules: rules },
       messages,
       DEFAULT_WEIGHTS,
     );
@@ -132,5 +363,271 @@ describe("rankConversation", () => {
     });
 
     expect(zeroWeightResult.ranking).toEqual(equalWeightResult.ranking);
+  });
+
+  it("extracts constraints without requiring an author role", () => {
+    const rules: ConstraintRule[] = [
+      {
+        id: "slides-required",
+        phrases: ["make slides"],
+        dimension: "format",
+        value: "slides",
+        mode: "require",
+        strength: 1,
+        label: "Produce slides",
+      },
+    ];
+    const messages: ConversationMessage[] = [
+      {
+        id: "M1",
+        text: "I could make slides.",
+        timestamp: "09:00",
+      },
+    ];
+
+    expect(extractConstraints(messages, rules).constraints).toHaveLength(1);
+  });
+
+  it("treats a zero-strength constraint set as neutral", () => {
+    const scenario = getScenario("finance-reframe");
+    const result = rankConversation(
+      {
+        ...scenario,
+        constraintRules: scenario.constraintRules.map((rule) => ({
+          ...rule,
+          strength: 0,
+        })),
+      },
+      scenario.messages,
+      DEFAULT_WEIGHTS,
+    );
+
+    expect(result.ranking.every((item) => item.signals.constraints === 0.5)).toBe(true);
+    expect(result.ranking.every((item) => Number.isFinite(item.total))).toBe(true);
+  });
+
+  it("does not describe an old reframe as the latest change after an unrelated message", () => {
+    const scenario = getScenario("finance-reframe");
+    const messages = [
+      ...scenario.messages,
+      message("M4", "Thanks, please use the usual secure transfer channel."),
+    ];
+    const result = rankConversation(scenario, messages, DEFAULT_WEIGHTS);
+
+    expect(result.latestReframe).toBeUndefined();
+    expect(result.explanation).not.toContain("latest reframe");
+    expect(result.reframes.length).toBeGreaterThan(0);
+  });
+});
+
+describe("extractConstraints", () => {
+  it("invalidates prior constraints at a task boundary without replacement constraints", () => {
+    const result = extractConstraints(
+      [message("M1", "Make slides."), message("M2", "Surprise me with a new task.")],
+      [rule("slides", "make slides", "format", "slides")],
+      [{ messageId: "M2", reason: "The user requested an unrelated task." }],
+    );
+
+    expect(result.activeConstraints).toHaveLength(0);
+    expect(result.constraints[0]).toMatchObject({ superseded: true });
+  });
+
+  it("replaces slides with CSV as the active format value", () => {
+    const rules = [
+      rule("slides", "make slides", "format", "slides"),
+      rule("csv", "send a CSV", "format", "csv"),
+    ];
+    const result = extractConstraints(
+      [message("M1", "Please make slides."), message("M2", "Send a CSV instead.")],
+      rules,
+    );
+
+    expect(result.activeConstraints).toEqual([
+      expect.objectContaining({ value: "csv", messageId: "M2" }),
+    ]);
+    expect(result.reframes[0]).toMatchObject({
+      messageId: "M2",
+      previousConstraint: { value: "slides", messageId: "M1" },
+      replacementConstraint: { value: "csv", messageId: "M2" },
+    });
+  });
+
+  it("allows PowerPoint after an earlier no-slides instruction", () => {
+    const rules = [
+      rule("no-slides", "no slides", "format", "slides", "forbid"),
+      rule("powerpoint", "PowerPoint after all", "format", "slides"),
+    ];
+    const result = extractConstraints(
+      [message("M1", "No slides."), message("M2", "Make it PowerPoint after all.")],
+      rules,
+    );
+
+    expect(result.activeConstraints[0]).toMatchObject({ mode: "require", value: "slides" });
+    expect(result.reframes[0]).toMatchObject({
+      previousConstraint: { mode: "forbid", matchedPhrase: "No slides" },
+      replacementConstraint: { mode: "require", matchedPhrase: "PowerPoint after all" },
+    });
+  });
+
+  it("replaces client review with finance ingestion in the purpose dimension", () => {
+    const rules = [
+      rule("review", "client review", "purpose", "client-review"),
+      rule("finance", "finance ingestion", "purpose", "finance-ingestion"),
+    ];
+    const result = extractConstraints(
+      [message("M1", "Prepare a client review."), message("M2", "This is for finance ingestion.")],
+      rules,
+    );
+
+    expect(result.activeConstraints[0]).toMatchObject({ value: "finance-ingestion" });
+    expect(result.constraints.find((item) => item.value === "client-review")?.superseded).toBe(true);
+  });
+
+  it("supersedes every earlier dimension after an explicit complete task switch", () => {
+    const rules = [
+      rule("slides", "make slides", "format", "slides"),
+      rule("charts", "include charts", "content", "charts"),
+      rule("guidance", "write retry guidance", "purpose", "retry-guidance"),
+    ];
+    const result = extractConstraints(
+      [
+        message("M1", "Make slides and include charts."),
+        message("M2", "Forget the previous task. Write retry guidance for API clients."),
+      ],
+      rules,
+    );
+
+    expect(result.activeConstraints).toEqual([
+      expect.objectContaining({ value: "retry-guidance", messageId: "M2" }),
+    ]);
+    expect(result.constraints.filter((item) => item.messageId === "M1").every((item) => item.superseded)).toBe(true);
+    expect(result.reframes.every((event) => event.kind === "task-switch")).toBe(true);
+  });
+
+  it("does not clear the task for negated, quoted, or reported reset phrases", () => {
+    const rules = [rule("slides", "make slides", "format", "slides")];
+    const result = extractConstraints(
+      [
+        message("M1", "Please make slides."),
+        message("M2", "Do not ignore the previous task; continue it."),
+        message("M3", 'The policy says "ignore the previous task" is not our instruction.'),
+      ],
+      rules,
+    );
+
+    expect(result.activeConstraints).toEqual([
+      expect.objectContaining({ value: "slides", messageId: "M1" }),
+    ]);
+    expect(result.constraints[0].superseded).toBe(false);
+  });
+
+  it("uses a provider-grounded task boundary for an unrelated topic switch without cue words", () => {
+    const rules = [
+      rule("database", "replication lag", "topic", "database-reliability"),
+      rule("runbook", "diagnostic runbook", "format", "runbook"),
+      rule("onboarding", "welcome email", "topic", "employee-onboarding"),
+      rule("friendly", "friendly", "tone", "friendly"),
+    ];
+    const messages = [
+      message("M1", "Investigate replication lag and prepare a diagnostic runbook."),
+      message("M2", "Write a friendly welcome email for new employees."),
+    ];
+    const result = extractConstraints(messages, rules, [
+      {
+        messageId: "M2",
+        reason: "The requested work changes from database reliability to employee onboarding.",
+      },
+    ]);
+
+    expect(result.activeConstraints).toHaveLength(2);
+    expect(result.activeConstraints).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ dimension: "topic", value: "employee-onboarding" }),
+        expect.objectContaining({ dimension: "tone", value: "friendly" }),
+      ]),
+    );
+    expect(result.constraints.filter((item) => item.messageId === "M1").every((item) => item.superseded)).toBe(true);
+    expect(result.reframes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "task-switch", messageId: "M2" }),
+      ]),
+    );
+  });
+
+  it("handles a paraphrased reversal", () => {
+    const rules = [
+      rule("slides", "presentation", "format", "slides"),
+      rule("csv", "spreadsheet export", "format", "csv"),
+    ];
+    const result = extractConstraints(
+      [
+        message("M1", "Prepare a presentation."),
+        message("M2", "Scrap the deck; a spreadsheet export works better."),
+      ],
+      rules,
+    );
+
+    expect(result.reframes).toHaveLength(1);
+    expect(result.activeConstraints[0]).toMatchObject({ value: "csv" });
+  });
+
+  it("does not extract a positive rule from an explicitly negated phrase", () => {
+    const rules = [
+      rule("slides", "slides", "format", "slides"),
+      rule("no-slides", "no slides", "format", "slides", "forbid"),
+    ];
+    const result = extractConstraints([message("M1", "No slides, please.")], rules);
+
+    expect(result.constraints).toHaveLength(1);
+    expect(result.constraints[0]).toMatchObject({ id: "no-slides", mode: "forbid" });
+  });
+
+  it("does not treat quoted or reported instructions as new constraints", () => {
+    const rules = [
+      rule("slides", "make slides", "format", "slides"),
+      rule("csv", "keep the CSV", "format", "csv"),
+    ];
+    const result = extractConstraints(
+      [
+        message("M1", "Keep the CSV."),
+        message("M2", "The old brief says \"make slides\"; keep the CSV."),
+        message("M3", "You previously said make slides, which I am quoting for the audit."),
+      ],
+      rules,
+    );
+
+    expect(result.reframes).toHaveLength(0);
+    expect(result.activeConstraints[0]).toMatchObject({ value: "csv" });
+    expect(result.constraints.some((item) => item.value === "slides")).toBe(false);
+  });
+
+  it("uses a later actionable occurrence after the same phrase is quoted", () => {
+    const rules = [rule("slides", "make slides", "format", "slides")];
+    const result = extractConstraints(
+      [
+        message(
+          "M1",
+          'The old brief says "make slides", but the current instruction is to make slides.',
+        ),
+      ],
+      rules,
+    );
+
+    expect(result.activeConstraints[0]).toMatchObject({
+      value: "slides",
+      matchedPhrase: "make slides",
+    });
+  });
+
+  it("uses the latest source message when the same active value is restated", () => {
+    const rules = [rule("csv", "CSV", "format", "csv")];
+    const result = extractConstraints(
+      [message("M1", "Send CSV."), message("M2", "CSV remains the required format.")],
+      rules,
+    );
+
+    expect(result.reframes).toHaveLength(0);
+    expect(result.activeConstraints[0]).toMatchObject({ messageId: "M2", matchedPhrase: "CSV" });
+    expect(result.constraints[0].superseded).toBe(true);
   });
 });

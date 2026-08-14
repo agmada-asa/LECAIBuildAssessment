@@ -12,42 +12,14 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { z } from "zod";
-
 import { buildCodexArguments } from "./command";
 import { buildProviderEnvironment } from "./environment";
+import { providerAnalysisSchema } from "./normalize";
 import type {
   ProviderAnalysis,
   ProviderId,
   ProviderStatus,
 } from "./types";
-
-const providerAnalysisSchema = z.object({
-  interpretations: z
-    .array(
-      z.object({
-        id: z.string(),
-        title: z.string(),
-        summary: z.string(),
-        semanticTerms: z.array(z.string()).min(3).max(10),
-        features: z.array(z.string()).min(1),
-      }),
-    )
-    .min(3)
-    .max(5),
-  constraints: z.array(
-    z.object({
-      id: z.string(),
-      phrases: z.array(z.string()).min(1),
-      dimension: z.string(),
-      value: z.string(),
-      mode: z.enum(["require", "forbid"]),
-      strength: z.number().min(0).max(1),
-      label: z.string(),
-    }),
-  ),
-  notes: z.string(),
-});
 
 /** JSON Schema is written explicitly so Codex can constrain its final output. */
 const outputSchema = {
@@ -100,9 +72,21 @@ const outputSchema = {
         additionalProperties: false,
       },
     },
+    taskBoundaries: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          messageId: { type: "string" },
+          reason: { type: "string" },
+        },
+        required: ["messageId", "reason"],
+        additionalProperties: false,
+      },
+    },
     notes: { type: "string" },
   },
-  required: ["interpretations", "constraints", "notes"],
+  required: ["interpretations", "constraints", "taskBoundaries", "notes"],
   additionalProperties: false,
 } as const;
 
@@ -233,7 +217,17 @@ export async function analyseWithCodex(
       "Return 3-5 mutually exclusive interpretations, not paraphrases.",
       "Use lowercase kebab-case IDs.",
       "Feature tags must use dimension:value syntax.",
-      "Constraints must quote phrases that appear in the conversation.",
+      "Constraints must quote phrases from the supplied source messages.",
+      "Each constraint label must include at least one meaningful word from its quoted source phrase so displayed evidence remains grounded.",
+      "Never infer a negative or absence constraint merely because the latest message omits earlier subject matter, fields, or requirements.",
+      "Return earlier and later constraints when a dimension changes; message order is significant.",
+      "Give each distinct requested task a canonical topic or task dimension.",
+      "Return taskBoundaries for any source message that semantically replaces the whole preceding task, even when it uses no transition phrase.",
+      "A task boundary requires a self-contained new subject and a required topic or task constraint grounded in that boundary message.",
+      "A follow-up that changes only format, audience, tone, or level of detail inherits the established subject and is not a task boundary. For example, 'Make slides for management' changes format and audience but retains the preceding subject.",
+      "Do not mark incremental detail as a task boundary. Ground every boundary with the exact source message ID and a concise reason.",
+      "Do not extract quoted, reported, or merely repeated instructions as new constraints.",
+      "Every constraint dimension must appear in at least one candidate feature tag.",
       "Do not rank the candidates; deterministic application code will do that.",
       "",
       "Conversation:",

@@ -33,8 +33,15 @@ export type ProviderConstraint = {
   label: string;
 };
 
+export type ProviderTaskBoundary = {
+  /** Exact canonical source-message ID where the unrelated replacement begins. */
+  messageId: string;
+  reason: string;
+};
+
 export type ProviderAnalysis = {
   interpretations: ProviderInterpretation[];
   constraints: ProviderConstraint[];
+  taskBoundaries?: ProviderTaskBoundary[];
   notes: string;
 };

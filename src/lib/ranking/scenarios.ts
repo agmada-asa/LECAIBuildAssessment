@@ -49,19 +49,16 @@ const financeReframe: Scenario = {
   messages: [
     {
       id: "M1",
-      author: "user",
       text: "Can you package June's Acme performance like the last client review?",
       timestamp: "09:12",
     },
     {
       id: "M2",
-      author: "user",
       text: "Include the important charts and keep it concise.",
       timestamp: "09:14",
     },
     {
       id: "M3",
-      author: "user",
       text: "Actually, this is for finance ingestion, not a review. No slides — they need the raw rows by Monday.",
       timestamp: "09:19",
     },
@@ -240,13 +237,11 @@ const weeklyAmbiguity: Scenario = {
   messages: [
     {
       id: "M1",
-      author: "user",
       text: "Set up a weekly pulse for retail performance.",
       timestamp: "14:02",
     },
     {
       id: "M2",
-      author: "user",
       text: "Ops needs to revisit it every Monday and share the highlights with leadership.",
       timestamp: "14:06",
     },
