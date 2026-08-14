@@ -5,11 +5,16 @@ This document explains the system boundaries and the reasoning behind them. It c
 ## Data flow
 
 ```text
-Conversation messages
+Canonical ConversationLog (JSON / CSV / TXT import)
         │
-        ├── candidate interpretations (3+)
-        ├── active and superseded constraints
-        └── accepted historical tasks
+        ▼
+Selected provider → ProviderAnalysis (3–5 candidates)
+        │
+        ▼
+Provider normalization
+        ├── stable candidate keys and distinctness
+        ├── grounded constraints with source IDs
+        └── relevant accepted historical outcomes
         │
         ▼
 Independent scorers
@@ -29,7 +34,16 @@ Ranked candidates + relative confidence
 
 ## State ownership
 
-The application—not the model—owns conversational state. A ranking run receives the full processed message list, the candidate catalogue, active policy weights, and user history. It also recomputes the immediately previous turn so movement can be explained accurately.
+The application—not the model—owns conversational state. Every imported format
+is converted to `ConversationLog`, and a ranking run receives the full ordered
+message list, provider-normalized candidates, active policy weights, and accepted
+history. It also recomputes the immediately previous turn so movement can be
+explained accurately. Source message IDs are never replaced or sorted.
+
+The unified API returns the normalized ranking input with the initial result.
+The browser can therefore apply weight changes deterministically without another
+provider call, while follow-up messages still rerun candidate extraction because
+they may introduce a genuinely new interpretation.
 
 This makes the demo reproducible and prevents provider session memory from becoming an undocumented fourth signal.
 
@@ -93,7 +107,14 @@ Weight changes affect ranking influence, not the underlying evidence. Conflict b
 - Canonical candidate features.
 - Extracted constraints grounded in conversation phrases.
 
-Providers do not choose the winner. This prevents Codex, Claude, Ollama, or another future adapter from silently replacing the application's scoring policy.
+Providers do not choose the winner. This prevents Codex, Ollama, or another
+future adapter from silently replacing the application's scoring policy.
+
+Provider output is normalized before ranking. Candidate IDs are derived from
+titles, feature tags must use `dimension:value`, constraints must match a source
+message and a candidate feature dimension, substantially overlapping candidates
+are merged, and fewer than three distinct results are rejected. Message order and
+source IDs carry provenance; the pipeline does not require speaker roles.
 
 The Codex adapter uses `spawn` with an argument array and stdin. It never builds
 a shell command from user content. Live extraction runs from the temporary
@@ -102,7 +123,10 @@ ignores user configuration and rule files so configured MCP servers and hooks
 are not loaded. The child process receives an allowlist of runtime paths instead
 of the parent server's full environment. JSON Schema constrains the response and
 Zod validates it before it crosses the provider boundary. Raw provider errors
-remain server-side and are represented by a redacted `502` response.
+remain server-side and are represented by structured, redacted HTTP errors.
+Availability is checked before execution, each run has a timeout, and one
+transient failure is retried. The deterministic fallback enters through the
+same normalization and ranking path and is labelled in the response.
 
 ## Explanation boundary
 
@@ -120,9 +144,11 @@ It does not reveal or request hidden model reasoning. Reviewers can trace every 
 
 Domain tests cover invariant behaviours rather than exact floating-point
 snapshots, including cue-free reframes and invalid weight policies. Provider
-tests cover subprocess isolation and redacted HTTP errors. JSDOM component tests
-cover the initial candidate list, heading hierarchy, accessible selection state,
-optional provider discovery, and the contradictory-message rank shift.
+tests cover subprocess isolation, normalization, retries, and structured errors.
+Parser tests cover valid, incomplete, and malformed JSON, CSV, and TXT. JSDOM
+component tests cover the initial candidate list, import preview, accessible
+selection state, optional provider discovery, and the contradictory-message rank
+shift.
 
 Manual browser and computer-use checks cover:
 

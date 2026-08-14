@@ -31,6 +31,84 @@ Open the local URL printed by Next.js, normally [http://localhost:3000](http://l
 
 No environment variables or model credentials are required for the walkthrough.
 
+## Analyze your own conversation
+
+Select **Analyze a log** in the header. Paste a conversation or choose/drop a
+`.json`, `.csv`, or `.txt` file, review the message preview, choose an available
+provider, then start analysis. The workbench replaces the walkthrough with the
+returned ranking and labels the provider that produced the candidates. Later
+follow-up messages send the entire updated log through the same `/api/rank`
+pipeline; they do not reuse a walkthrough candidate catalogue.
+
+Two ready-to-download examples are included:
+
+- [Finance reframe JSON](public/samples/finance-reframe.json)
+- [Weekly ambiguity CSV](public/samples/weekly-ambiguity.csv)
+
+### Canonical conversation format
+
+Every import is normalised to this Zod-validated contract. Array order is the
+source of truth and message IDs are retained for evidence references.
+
+```json
+{
+  "conversationId": "finance-handoff-42",
+  "userId": "maya-chen",
+  "domain": {
+    "name": "retail-analytics",
+    "metadata": { "region": "UK", "priority": 2 }
+  },
+  "messages": [
+    {
+      "id": "source-message-17",
+      "text": "Send the raw rows as CSV.",
+      "timestamp": "2026-08-14T09:19:00.000Z"
+    },
+    {
+      "id": "source-message-18",
+      "text": "Understood.",
+      "timestamp": "2026-08-14T09:19:10.000Z"
+    }
+  ],
+  "acceptedOutcomes": [
+    {
+      "id": "accepted-9",
+      "title": "Finance CSV export",
+      "summary": "Finance previously accepted row-level data as CSV.",
+      "semanticTerms": ["finance", "raw rows", "CSV"]
+    }
+  ]
+}
+```
+
+`conversationId`, `userId`, and at least one message are required. Each message
+requires a unique source ID, usable text, and an ISO-8601 timestamp. `domain` and
+`acceptedOutcomes` are optional. Empty logs, whitespace-only messages, duplicate
+IDs, and invalid timestamps are rejected before provider execution. The ranker
+uses every ordered message as task context; it does not require or infer a
+User/Assistant exchange.
+
+JSON may also be a top-level message array using `text` or the common `content`
+alias. In that shorthand, missing IDs and timestamps receive stable order-based
+values. Existing `author` or `role` fields are tolerated as optional source
+metadata, but are not required or used for scoring. CSV requires only a `text`
+column; `id`, `timestamp`, and `author` are optional:
+
+```csv
+id,text,timestamp
+M1,"Send rows, not slides",2026-08-14T09:19:00.000Z
+M2,Understood,2026-08-14T09:19:10.000Z
+```
+
+TXT uses one non-empty line per message. Prefix a line with any unique source ID
+and a colon to retain that ID; unprefixed lines receive stable `M1`, `M2`, … IDs:
+
+```text
+request-17: Prepare the June report with row-level detail.
+finance-reframe: Send the raw rows instead.
+No slides.
+```
+
 ## Run the checks
 
 ```bash
@@ -105,14 +183,22 @@ When a later message reverses the same dimension/value pair, the earlier constra
 
 The committed scenarios use the deterministic provider. This is intentional: a reviewer should not need one of my accounts or tools to run the assessment.
 
-An optional Next.js route exposes live candidate extraction through an installed Codex CLI:
+The unified endpoint accepts a canonical log and returns the complete ranking:
 
 ```bash
-curl -X POST http://localhost:3000/api/analyse \
+curl -X POST http://localhost:3000/api/rank \
   -H 'content-type: application/json' \
   -d '{
     "provider": "codex",
-    "conversation": "User: Package June performance like the client review. User: No slides; finance needs raw rows."
+    "conversation": {
+      "conversationId": "example-1",
+      "userId": "reviewer",
+      "messages": [{
+        "id": "M1",
+        "text": "No slides; finance needs raw rows as CSV.",
+        "timestamp": "2026-08-14T09:19:00.000Z"
+      }]
+    }
   }'
 ```
 
@@ -148,11 +234,16 @@ not as public unauthenticated endpoints.
 }
 ```
 
-`POST /api/analyse` accepts a `provider` of `codex` or `codex-oss` and a
-conversation between 10 and 20,000 characters. Success returns
-`{ "analysis": ProviderAnalysis }`. Invalid input returns `{ "error": string }`
-with status `400`; unavailable executables and invalid provider output return a
-redacted error with status `502`.
+`POST /api/rank` accepts `demo`, `codex`, or `codex-oss`, a canonical
+`conversation`, and optional three-axis `weights`. Success returns the producing
+provider, the normalized `RankingInput`, and a complete `RankingResult`. The UI
+uses that normalized input to apply later weight changes locally without calling
+the provider again. Errors use
+`{ "error": { "code", "message", "issues"? } }`: invalid logs return `400`, an
+unavailable selected provider returns `503`, and provider execution or output
+failures return a redacted `502`. CLI execution has a 120-second timeout and one
+safe retry for transient failures. The older `/api/analyse` extraction-only
+route remains available for adapter diagnostics.
 
 The app never reads or exposes saved CLI credentials. Provider discovery checks
 executable versions only, and analysis failures do not reflect raw CLI stderr to
@@ -165,6 +256,7 @@ src/
 ├── app/
 │   ├── api/analyse/route.ts       # Optional structured CLI extraction
 │   ├── api/providers/route.ts     # Safe local availability checks
+│   ├── api/rank/route.ts          # Canonical end-to-end ranking endpoint
 │   ├── layout.tsx                 # Static document shell and font variables
 │   └── page.tsx                   # Workbench entry point
 ├── components/
@@ -172,10 +264,13 @@ src/
 │   ├── intent-ranker.test.tsx     # Browser-like interaction regressions
 │   └── ui/                        # Requested shadcn preset components
 └── lib/
+    ├── conversations/             # Canonical schema and import parsers
     ├── providers/
     │   ├── command.ts             # Isolated non-interactive CLI arguments
     │   ├── codex-exec.ts          # Codex / Ollama adapter
+    │   ├── demo.ts                # Credential-free arbitrary-log fallback
     │   ├── environment.ts         # Subprocess environment allowlist
+    │   ├── normalize.ts           # Grounding, keys, features, deduplication
     │   └── types.ts               # Provider-neutral contract
     └── ranking/
         ├── engine.ts              # Scoring, ranking, confidence, abstention
@@ -214,7 +309,6 @@ The local Next.js server can safely invoke installed CLI adapters while retainin
 - Add a small labelled evaluation set and calibrate confidence thresholds against it.
 - Replace lexical demo similarity with a local embedding model while retaining message-level evidence.
 - Persist per-user task history in SQLite with accepted/corrected outcomes.
-- Connect the live provider output to the UI's candidate editor.
 - Add a human-feedback action that records the accepted interpretation for future history scoring.
 - Add adversarial tests for negation, quoted instructions, topic switches, and multiple simultaneous tasks.
 - Package the local-first app with Tauri only if native background monitoring becomes a real requirement.
@@ -223,7 +317,8 @@ The local Next.js server can safely invoke installed CLI adapters while retainin
 
 - Relative confidence is not statistically calibrated.
 - The zero-setup semantic scorer is lexical and will miss some synonyms.
-- Demo candidate generation uses transparent fixtures; live CLI extraction is exposed by API but not required by the walkthrough.
+- The credential-free arbitrary-log fallback compares three transparent output
+  forms; Codex or Codex with Ollama produces more task-specific candidates.
 - User history is represented by a small committed dataset rather than persistent storage.
 
 These limitations are deliberate scope choices rather than hidden production claims.
