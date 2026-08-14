@@ -53,7 +53,8 @@ Provider requests are abortable and sequence-tagged in the browser workflow.
 Changing or resetting the visible conversation invalidates pending work, so a
 late provider response cannot install candidates from an obsolete log.
 
-This makes the demo reproducible and prevents provider session memory from becoming an undocumented fourth signal.
+Passing the full canonical log prevents provider session memory from becoming
+an undocumented fourth signal.
 
 Imported conversations and appended messages are also revisioned in the local
 queue before analysis. A bounded callable worker claims leased tasks, commits
@@ -216,9 +217,10 @@ are not loaded. The child process receives an allowlist of runtime paths instead
 of the parent server's full environment. JSON Schema constrains the response and
 Zod validates it before it crosses the provider boundary. Raw provider errors
 remain server-side and are represented by structured, redacted HTTP errors.
-Availability is checked before execution, each run has a timeout, and one
-transient failure is retried. The deterministic fallback enters through the
-same normalization and ranking path and is labelled in the response.
+Configured and operational status are separate. Discovery performs bounded
+readiness probes before selection, each run has a timeout, and one transient
+failure is retried. Deterministic candidate generation is test-only and is not
+accepted by the production route.
 
 ## Explanation boundary
 

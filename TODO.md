@@ -217,12 +217,12 @@ the same pipeline:
 
 ### Model selection and runtime
 
-- [ ] Benchmark trained semantic embedding models against the labelled Resolve
+- [x] Benchmark trained semantic embedding models against the labelled Resolve
   evaluation set and record the accuracy, latency, cost, privacy, licensing,
   and deployment trade-offs.
-- [ ] Select and pin a production model, revision, vector dimensions, and input
+- [x] Select and pin a production model, revision, vector dimensions, and input
   limits from those results rather than choosing by anecdote.
-- [ ] Use the selected trained model for live analysis instead of
+- [x] Use the selected trained model for live analysis instead of
   `resolve-local-feature-hash`.
 - [x] Keep `resolve-local-feature-hash` only as an explicitly labelled
   deterministic demo/test provider; never present it as a production semantic
@@ -268,7 +268,7 @@ the same pipeline:
   because the candidate and message share a token.
 - [x] Expose enough semantic evidence to distinguish the embedding contribution
   from lexical overlap and constraint scoring.
-- [ ] Add an ablation view or evaluation report comparing lexical-only, current
+- [x] Add an ablation view or evaluation report comparing lexical-only, current
   feature-hash, and trained-model results before changing signal weights.
 
 ### Evaluation and rollout
@@ -276,15 +276,15 @@ the same pipeline:
 - [x] Extend the labelled evaluation set with deferred-work questions,
   resumptions, negated tool choices, semantically duplicate candidates, and
   proposal-versus-report wording.
-- [ ] Measure top-one accuracy, duplicate-candidate rate, false human-review
+- [x] Measure top-one accuracy, duplicate-candidate rate, false human-review
   rate, constraint-evidence correctness, and historical retrieval quality for
   each model candidate.
 - [x] Add deterministic provider-contract tests with mocked trained embeddings
   and a separately runnable integration evaluation against the pinned real
   model.
-- [ ] Establish acceptance thresholds and compare the new model with the current
+- [x] Establish acceptance thresholds and compare the new model with the current
   baseline before rollout.
-- [ ] Recalibrate semantic weight, softmax temperature, and human-review
+- [x] Recalibrate semantic weight, softmax temperature, and human-review
   thresholds only after candidate correctness and model selection are fixed.
 - [x] Roll out behind explicit configuration, compare results in shadow mode,
   and document rollback criteria.
@@ -429,65 +429,65 @@ the same pipeline:
 
 ## P2: Remove demo-only behavior
 
-- [ ] Remove the artificial processing delay.
-- [ ] Only use `Live analysis` when the real pipeline is running.
-- [ ] Replace scenario-specific UI text with data-driven copy.
-- [ ] Make provider controls operational rather than informational.
-- [ ] Split the large workbench component into focused components and hooks.
-- [ ] Add proper loading, empty, error, retry, and unavailable-provider states.
-- [ ] Clearly label deterministic sample mode.
-- [ ] Make arbitrary log analysis the primary screen.
-- [ ] Keep the curated scenarios as reproducible sample inputs, not a separate
+- [x] Remove the artificial processing delay.
+- [x] Only use `Live analysis` when the real pipeline is running.
+- [x] Replace scenario-specific UI text with data-driven copy.
+- [x] Make provider controls operational rather than informational.
+- [x] Split the large workbench component into focused components and hooks.
+- [x] Add proper loading, empty, error, retry, and unavailable-provider states.
+- [x] Clearly label deterministic sample mode.
+- [x] Make arbitrary log analysis the primary screen.
+- [x] Keep the curated scenarios as reproducible sample inputs, not a separate
   scoring implementation.
-- [ ] Distinguish `configured` from `operational` provider status: verify
+- [x] Distinguish `configured` from `operational` provider status: verify
   readiness with a bounded health check instead of showing green availability
   merely because environment variables exist.
-- [ ] Clear or visibly mark an old ranking as stale when a provider attempt
+- [x] Clear or visibly mark an old ranking as stale when a provider attempt
   fails, and disable accept/correct actions until the current run succeeds.
-- [ ] Name the active semantic model in the UI; do not label the local token and
+- [x] Name the active semantic model in the UI; do not label the local token and
   bigram feature hash only as `Semantic` in a way that implies trained
   embeddings.
 
 ## P2: Imported-log and responsive UX audit
 
-- [ ] Remove fixture-only scenario controls and fixture role metadata after an
+- [x] Remove fixture-only scenario controls and fixture role metadata after an
   arbitrary log is imported, or clearly separate samples from the active log.
-- [ ] Warn before switching a scenario discards an imported conversation or its
+- [x] Warn before switching a scenario discards an imported conversation or its
   unsaved analysis.
-- [ ] Preserve the scenario or conversation title at a 390 px viewport instead
+- [x] Preserve the scenario or conversation title at a 390 px viewport instead
   of leaving only unlabeled previous/next chevrons.
-- [ ] Keep the ranking and review state reachable without scrolling through an
+- [x] Keep the ranking and review state reachable without scrolling through an
   entire long transcript; consider a collapsed transcript or result-first
   mobile layout.
-- [ ] Raise dense 9-11 px evidence and metadata text to a readable minimum and
+- [x] Raise dense 9-11 px evidence and metadata text to a readable minimum and
   verify zoom, reflow, keyboard navigation, focus visibility, and contrast.
-- [ ] Do not display synthetic year-2000 timestamps for TXT messages that had no
+- [x] Do not display synthetic year-2000 timestamps for TXT messages that had no
   timestamp; show message order or label the time as unavailable.
 
 ## Documentation
 
-- [ ] Rewrite the README opening around what actually works.
-- [ ] Document the complete log-to-ranking data flow.
+- [x] Rewrite the README opening around what actually works.
+- [x] Document the complete log-to-ranking data flow.
 - [x] Document CSV, JSON, and TXT import formats.
-- [ ] Document Supabase setup and migrations.
-- [ ] Document every environment variable.
-- [ ] Document embedding model selection and fallback behavior.
-- [ ] Explain scoring weights and uncertainty thresholds.
-- [ ] Include evaluation results.
-- [ ] Clearly separate deterministic sample mode from live analysis.
-- [ ] Update the architecture documentation and diagrams.
-- [ ] Add clean-install and production-run instructions.
-- [ ] Keep an honest `Known limitations` section.
-- [ ] Explain what would be built next with more time.
+- [x] Document Supabase setup and migrations.
+- [x] Document every environment variable.
+- [x] Document embedding model selection and fallback behavior.
+- [x] Explain scoring weights and uncertainty thresholds.
+- [x] Include evaluation results.
+- [x] Clearly separate deterministic sample mode from live analysis.
+- [x] Update the architecture documentation and diagrams.
+- [x] Add clean-install and production-run instructions.
+- [x] Keep an honest `Known limitations` section.
+- [x] Explain what would be built next with more time.
 
 ## Submission readiness
 
 ### Repository
 
-- [ ] Create focused commits using Conventional Commit messages.
-- [ ] Inspect every staged diff for secrets and sensitive data.
+- [x] Create focused commits using Conventional Commit messages.
+- [x] Inspect every staged diff for secrets and sensitive data.
 - [ ] Push the project to a public GitHub repository.
-- [ ] Add a license if appropriate.
+- [x] Add a license if appropriate.
 - [ ] Confirm the repository opens in a logged-out browser.
 - [ ] Clone the public repository into a clean directory.
 - [ ] Confirm the documented setup works from the clean clone.
