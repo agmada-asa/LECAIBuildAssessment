@@ -208,7 +208,7 @@ export function ConversationImportDialog({
                 setPreview(undefined);
                 setError("");
               }}
-              placeholder={"request-17: Prepare the June report.\nfollow-up: Send the raw rows."}
+              placeholder={"Prepare the June report.\nSend the raw rows."}
               className="min-h-28 resize-y rounded-xl font-mono text-xs"
             />
           </div>
