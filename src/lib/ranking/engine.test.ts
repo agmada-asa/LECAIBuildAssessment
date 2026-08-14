@@ -95,7 +95,7 @@ describe("rankConversation", () => {
       },
     ];
     const result = rankConversation(
-      { ...scenario, messages, constraintRules: rules },
+      { ...scenario, constraintRules: rules },
       messages,
       DEFAULT_WEIGHTS,
     );
@@ -132,5 +132,46 @@ describe("rankConversation", () => {
     });
 
     expect(zeroWeightResult.ranking).toEqual(equalWeightResult.ranking);
+  });
+
+  it("extracts constraints without requiring an author role", () => {
+    const rules: ConstraintRule[] = [
+      {
+        id: "slides-required",
+        phrases: ["make slides"],
+        dimension: "format",
+        value: "slides",
+        mode: "require",
+        strength: 1,
+        label: "Produce slides",
+      },
+    ];
+    const messages: ConversationMessage[] = [
+      {
+        id: "M1",
+        text: "I could make slides.",
+        timestamp: "09:00",
+      },
+    ];
+
+    expect(extractConstraints(messages, rules).constraints).toHaveLength(1);
+  });
+
+  it("treats a zero-strength constraint set as neutral", () => {
+    const scenario = getScenario("finance-reframe");
+    const result = rankConversation(
+      {
+        ...scenario,
+        constraintRules: scenario.constraintRules.map((rule) => ({
+          ...rule,
+          strength: 0,
+        })),
+      },
+      scenario.messages,
+      DEFAULT_WEIGHTS,
+    );
+
+    expect(result.ranking.every((item) => item.signals.constraints === 0.5)).toBe(true);
+    expect(result.ranking.every((item) => Number.isFinite(item.total))).toBe(true);
   });
 });

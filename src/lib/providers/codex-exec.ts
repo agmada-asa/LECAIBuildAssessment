@@ -12,42 +12,14 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { z } from "zod";
-
 import { buildCodexArguments } from "./command";
 import { buildProviderEnvironment } from "./environment";
+import { providerAnalysisSchema } from "./normalize";
 import type {
   ProviderAnalysis,
   ProviderId,
   ProviderStatus,
 } from "./types";
-
-const providerAnalysisSchema = z.object({
-  interpretations: z
-    .array(
-      z.object({
-        id: z.string(),
-        title: z.string(),
-        summary: z.string(),
-        semanticTerms: z.array(z.string()).min(3).max(10),
-        features: z.array(z.string()).min(1),
-      }),
-    )
-    .min(3)
-    .max(5),
-  constraints: z.array(
-    z.object({
-      id: z.string(),
-      phrases: z.array(z.string()).min(1),
-      dimension: z.string(),
-      value: z.string(),
-      mode: z.enum(["require", "forbid"]),
-      strength: z.number().min(0).max(1),
-      label: z.string(),
-    }),
-  ),
-  notes: z.string(),
-});
 
 /** JSON Schema is written explicitly so Codex can constrain its final output. */
 const outputSchema = {
@@ -233,7 +205,8 @@ export async function analyseWithCodex(
       "Return 3-5 mutually exclusive interpretations, not paraphrases.",
       "Use lowercase kebab-case IDs.",
       "Feature tags must use dimension:value syntax.",
-      "Constraints must quote phrases that appear in the conversation.",
+      "Constraints must quote phrases from the supplied source messages.",
+      "Every constraint dimension must appear in at least one candidate feature tag.",
       "Do not rank the candidates; deterministic application code will do that.",
       "",
       "Conversation:",

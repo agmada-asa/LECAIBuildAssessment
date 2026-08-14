@@ -11,7 +11,8 @@ export type SignalWeights = Record<SignalKey, number>;
 
 export type ConversationMessage = {
   id: string;
-  author: "user" | "assistant";
+  /** Optional source label retained for compatibility; ranking is role-neutral. */
+  author?: string;
   text: string;
   timestamp: string;
 };
@@ -41,13 +42,20 @@ export type ConstraintRule = {
 
 export type HistoricalTask = {
   id: string;
-  interpretationId: string;
+  interpretationId?: string;
   summary: string;
   terms: string[];
   accepted: boolean;
 };
 
-export type Scenario = {
+/** Minimal input required by the ranker, independent of walkthrough fixtures. */
+export type RankingInput = {
+  interpretations: Interpretation[];
+  constraintRules: ConstraintRule[];
+  history: HistoricalTask[];
+};
+
+export type Scenario = RankingInput & {
   id: string;
   title: string;
   shortTitle: string;

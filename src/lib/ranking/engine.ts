@@ -15,8 +15,8 @@ import type {
   Interpretation,
   RankedInterpretation,
   RankingResult,
+  RankingInput,
   ReframeEvent,
-  Scenario,
   SignalKey,
   SignalScores,
   SignalWeights,
@@ -204,7 +204,9 @@ function constraintScore(
   interpretation: Interpretation,
   constraints: ExtractedConstraint[],
 ): { score: number; evidence: Evidence[] } {
-  const active = constraints.filter((constraint) => !constraint.superseded);
+  const active = constraints.filter(
+    (constraint) => !constraint.superseded && constraint.strength > 0,
+  );
   if (!active.length) return { score: 0.5, evidence: [] };
 
   let weightedTotal = 0;
@@ -389,7 +391,7 @@ function createExplanation(
 
 /** Scores and orders one conversation snapshot without comparing prior state. */
 function rankOnce(
-  scenario: Scenario,
+  input: RankingInput,
   messages: ConversationMessage[],
   weights: SignalWeights,
 ): {
@@ -399,13 +401,13 @@ function rankOnce(
 } {
   const { constraints, reframes } = extractConstraints(
     messages,
-    scenario.constraintRules,
+    input.constraintRules,
   );
 
-  const provisional = scenario.interpretations.map((interpretation) => {
+  const provisional = input.interpretations.map((interpretation) => {
     const semantic = semanticScore(interpretation, messages);
     const constraint = constraintScore(interpretation, constraints);
-    const historical = historicalScore(interpretation, messages, scenario.history);
+    const historical = historicalScore(interpretation, messages, input.history);
     const signals: SignalScores = {
       semantic: semantic.score,
       constraints: constraint.score,
@@ -443,14 +445,14 @@ function rankOnce(
  * rank shifts are derived rather than stored as demo-only annotations.
  */
 export function rankConversation(
-  scenario: Scenario,
+  input: RankingInput,
   messages: ConversationMessage[],
   weights: SignalWeights,
 ): RankingResult {
-  const current = rankOnce(scenario, messages, weights);
+  const current = rankOnce(input, messages, weights);
   const previous =
     messages.length > 1
-      ? rankOnce(scenario, messages.slice(0, -1), weights)
+      ? rankOnce(input, messages.slice(0, -1), weights)
       : undefined;
 
   const previousRankById = new Map(
