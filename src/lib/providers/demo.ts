@@ -9,24 +9,30 @@
 import type { ConversationLog } from "@/lib/conversations/schema";
 import type { ProviderAnalysis, ProviderConstraint } from "./types";
 
-/** Returns the exact source substring for a grounded case-insensitive pattern. */
-function matchPhrase(text: string, pattern: RegExp): string | undefined {
-  return text.match(pattern)?.[0];
+/** Returns each distinct source substring so reversals remain ordered downstream. */
+function matchPhrases(log: ConversationLog, pattern: RegExp): string[] {
+  return [
+    ...new Set(
+      log.messages
+        .map((message) => message.text.match(pattern)?.[0])
+        .filter((phrase): phrase is string => Boolean(phrase)),
+    ),
+  ];
 }
 
 /** Creates a constraint only when a user message contains the supplied phrase. */
 function constraint(
   id: string,
-  phrase: string | undefined,
+  phrases: string[],
   dimension: string,
   value: string,
   mode: ProviderConstraint["mode"],
   label: string,
 ): ProviderConstraint | undefined {
-  if (!phrase) return undefined;
+  if (!phrases.length) return undefined;
   return {
     id,
-    phrases: [phrase],
+    phrases,
     dimension,
     value,
     mode,
@@ -37,16 +43,10 @@ function constraint(
 
 /** Generates transparent competing interpretations and grounded format rules. */
 export function analyseWithDemo(log: ConversationLog): ProviderAnalysis {
-  const combined = log.messages.map((message) => message.text).join("\n");
-  const noSlides = matchPhrase(combined, /(?:no|without)\s+(?:slides?|powerpoint|deck)/i);
-  const slides = noSlides
-    ? undefined
-    : matchPhrase(combined, /(?:slides?|powerpoint|presentation|slide deck)/i);
-
   const constraints = [
     constraint(
       "csv-required",
-      matchPhrase(combined, /(?:csv|comma[- ]separated)/i),
+      matchPhrases(log, /(?:csv|comma[- ]separated|spreadsheet export|machine-readable (?:file|export))/i),
       "format",
       "csv",
       "require",
@@ -54,7 +54,10 @@ export function analyseWithDemo(log: ConversationLog): ProviderAnalysis {
     ),
     constraint(
       "slides-forbidden",
-      noSlides,
+      matchPhrases(
+        log,
+        /(?:no|without|not using|do not (?:make|use))\s+(?:slides?|powerpoint|deck|presentation)/i,
+      ),
       "format",
       "slides",
       "forbid",
@@ -62,15 +65,15 @@ export function analyseWithDemo(log: ConversationLog): ProviderAnalysis {
     ),
     constraint(
       "slides-required",
-      slides,
+      matchPhrases(log, /(?:powerpoint(?: after all)?|slide deck|presentation|slides?)/i),
       "format",
       "slides",
       "require",
-      "Prepare a presentation",
+      "Prepare slides or PowerPoint",
     ),
     constraint(
       "dashboard-required",
-      matchPhrase(combined, /(?:dashboard|live view)/i),
+      matchPhrases(log, /(?:dashboard|live view)/i),
       "format",
       "dashboard",
       "require",
@@ -78,11 +81,35 @@ export function analyseWithDemo(log: ConversationLog): ProviderAnalysis {
     ),
     constraint(
       "raw-required",
-      matchPhrase(combined, /(?:raw rows?|row-level data)/i),
+      matchPhrases(log, /(?:raw rows?|row-level data)/i),
       "granularity",
       "raw",
       "require",
       "Retain row-level data",
+    ),
+    constraint(
+      "client-review-required",
+      matchPhrases(log, /(?:client review|review deck)/i),
+      "purpose",
+      "client-review",
+      "require",
+      "Prepare the work for client review",
+    ),
+    constraint(
+      "client-review-forbidden",
+      matchPhrases(log, /(?:not|no longer)\s+(?:a\s+)?(?:client\s+)?review/i),
+      "purpose",
+      "client-review",
+      "forbid",
+      "The work is not for client review",
+    ),
+    constraint(
+      "finance-ingestion-required",
+      matchPhrases(log, /(?:finance ingestion|finance data handoff|for finance)/i),
+      "purpose",
+      "finance-ingestion",
+      "require",
+      "Prepare the work for finance ingestion",
     ),
   ].filter((item): item is ProviderConstraint => Boolean(item));
 
@@ -93,24 +120,40 @@ export function analyseWithDemo(log: ConversationLog): ProviderAnalysis {
         title: "Deliver structured data",
         summary: "Turn the requested work into a machine-readable CSV with source-level detail.",
         semanticTerms: ["CSV", "raw rows", "structured data", "spreadsheet", "export"],
-        features: ["format:csv", "granularity:raw", "approach:structured"],
+        features: [
+          "format:csv",
+          "granularity:raw",
+          "approach:structured",
+          "purpose:finance-ingestion",
+        ],
       },
       {
         id: "presentation",
         title: "Prepare a visual presentation",
         summary: "Explain the requested work as a concise slide presentation for review.",
         semanticTerms: ["slides", "presentation", "PowerPoint", "review", "charts"],
-        features: ["format:slides", "granularity:summarised", "approach:visual"],
+        features: [
+          "format:slides",
+          "granularity:summarised",
+          "approach:visual",
+          "purpose:client-review",
+        ],
       },
       {
         id: "dashboard",
         title: "Publish an interactive dashboard",
         summary: "Make the requested information available as a reusable interactive view.",
         semanticTerms: ["dashboard", "live view", "interactive", "reusable", "monitor"],
-        features: ["format:dashboard", "granularity:aggregated", "approach:interactive"],
+        features: [
+          "format:dashboard",
+          "granularity:aggregated",
+          "approach:interactive",
+          "purpose:monitoring",
+        ],
       },
     ],
     constraints,
+    taskBoundaries: [],
     notes:
       "Deterministic fallback: compares structured data, presentation, and dashboard interpretations.",
   };

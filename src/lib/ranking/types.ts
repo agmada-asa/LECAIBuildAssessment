@@ -48,11 +48,19 @@ export type HistoricalTask = {
   accepted: boolean;
 };
 
+/** Provider-grounded point where a message replaces the preceding task wholesale. */
+export type TaskBoundary = {
+  messageId: string;
+  reason: string;
+};
+
 /** Minimal input required by the ranker, independent of walkthrough fixtures. */
 export type RankingInput = {
   interpretations: Interpretation[];
   constraintRules: ConstraintRule[];
   history: HistoricalTask[];
+  /** Semantic task switches detected upstream; absent for legacy fixtures. */
+  taskBoundaries?: TaskBoundary[];
 };
 
 export type Scenario = RankingInput & {
@@ -84,12 +92,49 @@ export type ExtractedConstraint = ConstraintRule & {
 
 export type ReframeEvent = {
   messageId: string;
+  /** A task switch invalidates all prior dimensions; a constraint change replaces one. */
+  kind: "constraint-change" | "task-switch";
+  /** Semantic provider rationale for a whole-task boundary, when available. */
+  reason?: string;
   summary: string;
   previousConstraint: ExtractedConstraint;
   replacementConstraint: ExtractedConstraint;
 };
 
 export type SignalScores = Record<SignalKey, number>;
+
+/** Complete prior state retained beside a candidate's current scores. */
+export type RankingSnapshot = {
+  rank: number;
+  signals: SignalScores;
+  total: number;
+  confidence: number;
+};
+
+/** Current-minus-previous score changes; positive rank means the candidate rose. */
+export type RankingDeltas = SignalScores & {
+  total: number;
+  confidence: number;
+  rank: number;
+};
+
+/** One materially changed scoring axis traced to the newly processed message. */
+export type MaterialSignalChange = {
+  signal: SignalKey;
+  messageId: string;
+  previous: number;
+  current: number;
+  delta: number;
+};
+
+/** Evidence comparison for the immediately previous and current snapshots. */
+export type CandidateChange = {
+  messageId: string;
+  addedEvidence: Evidence[];
+  removedEvidence: Evidence[];
+  unchangedEvidence: Evidence[];
+  materialSignals: MaterialSignalChange[];
+};
 
 export type RankedInterpretation = {
   id: string;
@@ -101,12 +146,49 @@ export type RankedInterpretation = {
   total: number;
   confidence: number;
   evidence: Evidence[];
+  /** Previous values and signed deltas are present whenever a prior message exists. */
+  previous?: RankingSnapshot;
+  deltas?: RankingDeltas;
+  change?: CandidateChange;
+  /** Grounded summary for this candidate, not just the winning candidate. */
+  explanation: string;
+};
+
+export type RankingWinner = {
+  id: string;
+  title: string;
+  rank: number;
+  total: number;
+  confidence: number;
+};
+
+/** Describes winner movement between the last two conversation snapshots. */
+export type RankingChange = {
+  messageId: string;
+  winnerChanged: boolean;
+  previousWinner: RankingWinner;
+  currentWinner: RankingWinner;
+  previousWinnerExplanation: string;
+  currentWinnerExplanation: string;
+};
+
+/** Makes the selected policy's dominant axis and rationale machine-readable. */
+export type InfluentialAxis = {
+  key: SignalKey;
+  weight: number;
+  explanation: string;
 };
 
 export type RankingResult = {
   ranking: RankedInterpretation[];
   constraints: ExtractedConstraint[];
+  /** One canonical active value per dimension for direct inspection. */
+  activeConstraints: ExtractedConstraint[];
   reframes: ReframeEvent[];
+  /** Present only when the newest message itself changed a constraint. */
+  latestReframe?: ReframeEvent;
+  rankingChange?: RankingChange;
+  mostInfluentialAxis: InfluentialAxis;
   uncertain: boolean;
   uncertaintyReason?: string;
   explanation: string;

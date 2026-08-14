@@ -8,6 +8,8 @@ export type RankRequest = {
   provider: ProviderId;
   conversation: ConversationLog;
   weights?: SignalWeights;
+  /** Normalized catalogue shown by the preceding run, used for truthful deltas. */
+  previousInput?: RankingInput;
 };
 
 export type RankSuccessResponse = {

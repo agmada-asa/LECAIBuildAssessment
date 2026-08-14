@@ -15,6 +15,7 @@ import { normalizeProviderAnalysis } from "@/lib/providers/normalize";
 import type { ProviderAnalysis, ProviderId } from "@/lib/providers/types";
 import type { RankErrorResponse, RankSuccessResponse } from "@/lib/ranking/api";
 import { rankConversation } from "@/lib/ranking/engine";
+import { rankingInputSchema } from "@/lib/ranking/schema";
 import { DEFAULT_WEIGHTS } from "@/lib/ranking/scenarios";
 
 export const runtime = "nodejs";
@@ -29,6 +30,7 @@ const requestSchema = z.object({
   provider: z.enum(["demo", "codex", "codex-oss"]),
   conversation: conversationLogSchema,
   weights: weightsSchema.optional(),
+  previousInput: rankingInputSchema.optional(),
 });
 
 /** Serialises the canonical log with source IDs and ordering intact for a CLI provider. */
@@ -89,7 +91,12 @@ export async function POST(request: Request) {
     });
   }
 
-  const { provider, conversation, weights = DEFAULT_WEIGHTS } = parsed.data;
+  const {
+    provider,
+    conversation,
+    weights = DEFAULT_WEIGHTS,
+    previousInput,
+  } = parsed.data;
   let analysis: ProviderAnalysis;
 
   if (provider === "demo") {
@@ -133,7 +140,12 @@ export async function POST(request: Request) {
     });
   }
 
-  const result = rankConversation(input, conversation.messages, weights);
+  const result = rankConversation(
+    input,
+    conversation.messages,
+    weights,
+    previousInput,
+  );
   const response: RankSuccessResponse = {
     provider: {
       id: provider,

@@ -72,9 +72,21 @@ const outputSchema = {
         additionalProperties: false,
       },
     },
+    taskBoundaries: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          messageId: { type: "string" },
+          reason: { type: "string" },
+        },
+        required: ["messageId", "reason"],
+        additionalProperties: false,
+      },
+    },
     notes: { type: "string" },
   },
-  required: ["interpretations", "constraints", "notes"],
+  required: ["interpretations", "constraints", "taskBoundaries", "notes"],
   additionalProperties: false,
 } as const;
 
@@ -206,6 +218,15 @@ export async function analyseWithCodex(
       "Use lowercase kebab-case IDs.",
       "Feature tags must use dimension:value syntax.",
       "Constraints must quote phrases from the supplied source messages.",
+      "Each constraint label must include at least one meaningful word from its quoted source phrase so displayed evidence remains grounded.",
+      "Never infer a negative or absence constraint merely because the latest message omits earlier subject matter, fields, or requirements.",
+      "Return earlier and later constraints when a dimension changes; message order is significant.",
+      "Give each distinct requested task a canonical topic or task dimension.",
+      "Return taskBoundaries for any source message that semantically replaces the whole preceding task, even when it uses no transition phrase.",
+      "A task boundary requires a self-contained new subject and a required topic or task constraint grounded in that boundary message.",
+      "A follow-up that changes only format, audience, tone, or level of detail inherits the established subject and is not a task boundary. For example, 'Make slides for management' changes format and audience but retains the preceding subject.",
+      "Do not mark incremental detail as a task boundary. Ground every boundary with the exact source message ID and a concise reason.",
+      "Do not extract quoted, reported, or merely repeated instructions as new constraints.",
       "Every constraint dimension must appear in at least one candidate feature tag.",
       "Do not rank the candidates; deterministic application code will do that.",
       "",

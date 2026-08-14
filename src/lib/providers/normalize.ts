@@ -44,6 +44,14 @@ export const providerAnalysisSchema = z.object({
       label: z.string().trim().min(1),
     }),
   ),
+  taskBoundaries: z
+    .array(
+      z.object({
+        messageId: z.string().trim().min(1).max(200),
+        reason: z.string().trim().min(1).max(1_000),
+      }),
+    )
+    .default([]),
   notes: z.string().trim(),
 });
 
@@ -63,6 +71,61 @@ function slug(value: string): string {
 /** Canonicalises text for grounding and duplicate comparisons. */
 function normaliseText(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+const groundingStopWords = new Set([
+  "a",
+  "an",
+  "and",
+  "as",
+  "at",
+  "by",
+  "create",
+  "deliver",
+  "do",
+  "for",
+  "from",
+  "in",
+  "into",
+  "later",
+  "make",
+  "must",
+  "no",
+  "not",
+  "of",
+  "on",
+  "or",
+  "prepare",
+  "produce",
+  "replacement",
+  "require",
+  "required",
+  "task",
+  "the",
+  "this",
+  "to",
+  "use",
+  "with",
+  "without",
+]);
+
+/** Returns source-bearing words used to keep displayed evidence faithful. */
+function groundingTerms(value: string): Set<string> {
+  return new Set(
+    normaliseText(value)
+      .split(" ")
+      .filter((token) => token.length > 2 && !groundingStopWords.has(token)),
+  );
+}
+
+/**
+ * Prevents a provider from presenting an inference from omitted information as
+ * if it were an explicit source-grounded constraint.
+ */
+function hasGroundedLabel(label: string, phrase: string): boolean {
+  const labelTerms = groundingTerms(label);
+  const phraseTerms = groundingTerms(phrase);
+  return [...labelTerms].some((term) => phraseTerms.has(term));
 }
 
 /** Returns token overlap against the smaller candidate description. */
@@ -152,12 +215,20 @@ export function normalizeProviderAnalysis(
   }
 
   const sourceText = log.messages.map((message) => normaliseText(message.text));
-  const constraintRules = analysis.constraints.map((constraint) => {
-    const phrases = constraint.phrases.filter((phrase) => {
+  const sourceMessageIds = new Set(log.messages.map((message) => message.id));
+  (analysis.taskBoundaries ?? []).forEach((boundary) => {
+    if (!sourceMessageIds.has(boundary.messageId)) {
+      throw new Error(
+        `Task boundary “${boundary.messageId}” is not grounded in a source message.`,
+      );
+    }
+  });
+  const constraintRules = analysis.constraints.flatMap((constraint) => {
+    const groundedPhrases = constraint.phrases.filter((phrase) => {
       const target = normaliseText(phrase);
       return target.length > 0 && sourceText.some((message) => message.includes(target));
     });
-    if (!phrases.length) {
+    if (!groundedPhrases.length) {
       throw new Error(
         `Constraint “${constraint.id}” is not grounded in a source message.`,
       );
@@ -171,7 +242,25 @@ export function normalizeProviderAnalysis(
         `Constraint dimension “${constraint.dimension}” is missing from candidate features.`,
       );
     }
-    return { ...constraint, phrases };
+    const phrases = groundedPhrases.filter((phrase) =>
+      hasGroundedLabel(constraint.label, phrase),
+    );
+    return phrases.length ? [{ ...constraint, phrases }] : [];
+  });
+
+  const messageTextById = new Map(
+    log.messages.map((message) => [message.id, normaliseText(message.text)]),
+  );
+  const taskBoundaries = (analysis.taskBoundaries ?? []).filter((boundary) => {
+    const boundaryText = messageTextById.get(boundary.messageId)!;
+    return constraintRules.some(
+      (constraint) =>
+        constraint.mode === "require" &&
+        (constraint.dimension === "topic" || constraint.dimension === "task") &&
+        constraint.phrases.some((phrase) =>
+          boundaryText.includes(normaliseText(phrase)),
+        ),
+    );
   });
 
   constraintRules.forEach((constraint, index) => {
@@ -193,5 +282,6 @@ export function normalizeProviderAnalysis(
     interpretations,
     constraintRules,
     history: buildHistory(log, interpretations),
+    taskBoundaries,
   };
 }
