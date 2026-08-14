@@ -63,4 +63,46 @@ describe("analyseWithOpenAICompatible", () => {
     await expect(operation).rejects.not.toThrow("server-key");
     await expect(operation).rejects.toThrow("HTTP 500");
   });
+
+  it("classifies provider rate limits without exposing the response body", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify({ error: { message: "token=server-key" } }), {
+          status: 429,
+          headers: { "x-request-id": "request-safe-123" },
+        })),
+    );
+
+    const operation = analyseWithOpenAICompatible("[M1] Create something useful.", {
+      OPENAI_COMPATIBLE_BASE_URL: "https://api.example.test/v1",
+      OPENAI_COMPATIBLE_API_KEY: "server-key",
+      OPENAI_COMPATIBLE_ANALYSIS_MODEL: "analysis-model",
+    });
+
+    await expect(operation).rejects.toMatchObject({
+      status: 429,
+      retryable: true,
+      requestId: "request-safe-123",
+    });
+    await expect(operation).rejects.toThrow(/rate limit or capacity limit/i);
+    await expect(operation).rejects.not.toThrow("server-key");
+  });
+
+  it("identifies rejected credentials as configuration work", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("private provider details", { status: 401 })),
+    );
+
+    const operation = analyseWithOpenAICompatible("[M1] Create something useful.", {
+      OPENAI_COMPATIBLE_BASE_URL: "https://api.example.test/v1",
+      OPENAI_COMPATIBLE_API_KEY: "server-key",
+      OPENAI_COMPATIBLE_ANALYSIS_MODEL: "analysis-model",
+    });
+
+    await expect(operation).rejects.toMatchObject({ status: 401, retryable: false });
+    await expect(operation).rejects.toThrow(/rejected the API key/i);
+    await expect(operation).rejects.not.toThrow("private provider details");
+  });
 });

@@ -65,4 +65,20 @@ describe("POST /api/analyse", () => {
     expect(body).not.toContain("private-value");
     expect(body).not.toContain("auth.json");
   });
+
+  it("does not mislabel malformed provider output as an invalid client request", async () => {
+    analyseWithOpenAICompatible.mockRejectedValue(new SyntaxError("Unexpected provider output"));
+
+    const response = await POST(
+      createRequest({
+        provider: "api",
+        conversation: "Summarise this sufficiently long conversation.",
+      }),
+    );
+
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({
+      error: "The selected provider returned malformed structured output.",
+    });
+  });
 });

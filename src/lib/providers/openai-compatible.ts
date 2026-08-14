@@ -11,7 +11,7 @@ import { z } from "zod";
 
 import { providerAnalysisSchema } from "./normalize";
 import { providerOutputJsonSchema } from "./codex-exec";
-import type { ProviderAnalysis } from "./types";
+import { ProviderRequestError, type ProviderAnalysis } from "./types";
 
 const chatResponseSchema = z.object({
   choices: z.array(
@@ -20,6 +20,57 @@ const chatResponseSchema = z.object({
     }),
   ).min(1),
 });
+
+/** Converts one upstream status into actionable, non-sensitive diagnostics. */
+function providerHttpError(response: Response): ProviderRequestError {
+  const requestId = response.headers.get("x-request-id") ?? undefined;
+  if (response.status === 401) {
+    return new ProviderRequestError(
+      "The analysis provider rejected the API key. Check the configured server-side key.",
+      response.status,
+      false,
+      requestId,
+    );
+  }
+  if (response.status === 403) {
+    return new ProviderRequestError(
+      "The analysis provider denied access to the selected model. Check model access and project permissions.",
+      response.status,
+      false,
+      requestId,
+    );
+  }
+  if (response.status === 404) {
+    return new ProviderRequestError(
+      "The analysis endpoint or selected model was not found. Check the base URL and model name.",
+      response.status,
+      false,
+      requestId,
+    );
+  }
+  if (response.status === 429) {
+    return new ProviderRequestError(
+      "The analysis provider's rate limit or capacity limit was reached. Retry later or choose another model or provider.",
+      response.status,
+      true,
+      requestId,
+    );
+  }
+  if (response.status >= 500) {
+    return new ProviderRequestError(
+      `The analysis provider is temporarily unavailable (HTTP ${response.status}). Retry later.`,
+      response.status,
+      true,
+      requestId,
+    );
+  }
+  return new ProviderRequestError(
+    `The analysis provider rejected the request (HTTP ${response.status}). Check endpoint and model compatibility.`,
+    response.status,
+    false,
+    requestId,
+  );
+}
 
 /** Sends the extraction prompt to a configured OpenAI-compatible endpoint. */
 export async function analyseWithOpenAICompatible(
@@ -72,12 +123,16 @@ export async function analyseWithOpenAICompatible(
       signal: controller.signal,
     });
   } catch {
-    throw new Error("The OpenAI-compatible analysis endpoint could not be reached.");
+    throw new ProviderRequestError(
+      "The OpenAI-compatible analysis endpoint could not be reached.",
+      502,
+      true,
+    );
   } finally {
     clearTimeout(timeout);
   }
   if (!response.ok) {
-    throw new Error(`The OpenAI-compatible analysis endpoint returned HTTP ${response.status}.`);
+    throw providerHttpError(response);
   }
   const parsedResponse = chatResponseSchema.parse(await response.json());
   return providerAnalysisSchema.parse(

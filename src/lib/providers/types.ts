@@ -7,6 +7,23 @@
  */
 export type ProviderId = "demo" | "codex" | "api";
 
+/**
+ * Safe provider failure metadata that may cross the server route boundary.
+ * Raw response bodies are deliberately excluded because they can contain
+ * credentials or provider diagnostics that are unsuitable for the UI.
+ */
+export class ProviderRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly retryable: boolean,
+    readonly requestId?: string,
+  ) {
+    super(message);
+    this.name = "ProviderRequestError";
+  }
+}
+
 export type ProviderStatus = {
   id: ProviderId;
   name: string;
