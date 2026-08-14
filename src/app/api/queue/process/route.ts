@@ -55,7 +55,15 @@ export async function POST(request: Request) {
         }),
       });
       const response = await rankConversation(rankRequest);
-      if (!response.ok) throw new Error("Ranking request failed");
+      if (!response.ok) {
+        const body = (await response.json()) as {
+          error?: { message?: string } | string;
+        };
+        const message = typeof body.error === "string"
+          ? body.error
+          : body.error?.message;
+        throw new Error(message ?? "The ranking request failed without a usable provider error.");
+      }
       return (await response.json()) as QueueRankingResult;
     },
     { limit: parsed.data.limit },

@@ -22,6 +22,10 @@ const enqueueSchema = z.object({
 });
 
 const retrySchema = z.object({ taskId: z.string().trim().min(1).max(200) });
+const renameSchema = z.object({
+  currentConversationId: z.string().trim().min(1).max(200),
+  nextConversationId: z.string().trim().min(1).max(200),
+});
 
 /** Returns an authorization response without leaking whether tasks exist. */
 function missingOwnerResponse(): NextResponse {
@@ -35,7 +39,9 @@ function missingOwnerResponse(): NextResponse {
 export async function GET(request: Request) {
   const ownerId = deviceIdFromRequest(request);
   if (!ownerId) return missingOwnerResponse();
-  const tasks = await createSQLiteRepository().listRankingTasks(ownerId);
+  const repository = createSQLiteRepository();
+  await repository.reconcilePendingRankingTasks(ownerId);
+  const tasks = await repository.listRankingTasks(ownerId);
   return NextResponse.json({ tasks });
 }
 
@@ -73,11 +79,25 @@ export async function PATCH(request: Request) {
   } catch {
     return NextResponse.json({ error: "Send valid JSON." }, { status: 400 });
   }
-  const parsed = retrySchema.safeParse(json);
-  if (!parsed.success) {
-    return NextResponse.json({ error: "Provide a valid task id." }, { status: 400 });
+  const rename = renameSchema.safeParse(json);
+  if (rename.success) {
+    const renamed = await createSQLiteRepository().renameConversation(
+      ownerId,
+      rename.data.currentConversationId,
+      rename.data.nextConversationId,
+    );
+    return renamed
+      ? NextResponse.json({ renamed: true })
+      : NextResponse.json(
+          { error: "That conversation is unavailable or the new name is already in use." },
+          { status: 409 },
+        );
   }
-  const retried = await createSQLiteRepository().retryRankingTask(ownerId, parsed.data.taskId);
+  const retry = retrySchema.safeParse(json);
+  if (!retry.success) {
+    return NextResponse.json({ error: "Provide a valid task id or conversation rename." }, { status: 400 });
+  }
+  const retried = await createSQLiteRepository().retryRankingTask(ownerId, retry.data.taskId);
   return retried
     ? NextResponse.json({ retried: true })
     : NextResponse.json(

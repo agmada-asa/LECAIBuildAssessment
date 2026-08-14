@@ -107,6 +107,40 @@ describe("POST /api/rank", () => {
     });
   });
 
+  it("completes the queued revision with the direct analysis result", async () => {
+    const ownerId = "00000000-0000-4000-8000-000000000001";
+    const repository = {
+      findSimilarOutcomes: vi.fn().mockResolvedValue([]),
+      persistRankingRun: vi.fn().mockResolvedValue({
+        id: "run-1",
+        state: "decided",
+        duplicate: false,
+      }),
+      completePendingRankingTask: vi.fn().mockResolvedValue(true),
+    };
+    createSQLiteRepository.mockReturnValue(repository);
+    const response = await POST(new Request("http://localhost/api/rank", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-device-id": ownerId },
+      body: JSON.stringify({
+        provider: "demo",
+        conversation,
+        queuedTask: { id: "task-1", revision: 3 },
+      }),
+    }));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(repository.completePendingRankingTask).toHaveBeenCalledWith(
+      ownerId,
+      { id: "task-1", revision: 3 },
+      expect.objectContaining({
+        provider: expect.objectContaining({ id: "demo" }),
+        result: body.result,
+      }),
+    );
+  });
+
   it("uses the prior run's candidate catalogue for follow-up movement", async () => {
     const previousInput = {
       interpretations: [

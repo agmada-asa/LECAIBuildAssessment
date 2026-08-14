@@ -147,7 +147,15 @@ function parseJson(input: string, options: ConversationImportOptions): unknown {
     throw new ConversationImportError("Paste valid JSON or choose a valid .json file.");
   }
 
-  if (!Array.isArray(value)) return value;
+  if (!Array.isArray(value)) {
+    if (typeof value === "object" && value !== null && options.conversationId) {
+      return {
+        ...value,
+        conversationId: options.conversationId,
+      };
+    }
+    return value;
+  }
   return {
     conversationId: options.conversationId ?? stableId(input),
     userId: options.userId ?? "imported-user",

@@ -6,6 +6,7 @@ const { repository } = vi.hoisted(() => ({
   repository: {
     rankingRunBelongsToUser: vi.fn(),
     storeOutcome: vi.fn(),
+    resolveRankingReview: vi.fn(),
   },
 }));
 
@@ -45,6 +46,7 @@ describe("POST /api/outcomes", () => {
     vi.clearAllMocks();
     repository.rankingRunBelongsToUser.mockResolvedValue(true);
     repository.storeOutcome.mockResolvedValue(undefined);
+    repository.resolveRankingReview.mockResolvedValue(true);
   });
 
   it("requires a browser device identifier", async () => {
@@ -79,6 +81,10 @@ describe("POST /api/outcomes", () => {
         embeddingModel: "resolve-local-feature-hash",
         embedding: expect.any(Array),
       }),
+    );
+    expect(repository.resolveRankingReview).toHaveBeenCalledWith(
+      "00000000-0000-4000-8000-000000000001",
+      body.rankingRunId,
     );
   });
 

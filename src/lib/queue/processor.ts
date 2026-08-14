@@ -46,10 +46,13 @@ export async function processQueuedTasks(
             : "decided"
           : "pending",
       });
-    } catch {
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : "Analysis failed. Retry this task when the provider is available.";
       const committed = await repository.failRankingTask(
         claim,
-        "Analysis failed. Retry this task when the provider is available.",
+        message,
       );
       processed.push({
         taskId: claim.id,

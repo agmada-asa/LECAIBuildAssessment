@@ -6,7 +6,6 @@
  */
 
 import { NextResponse } from "next/server";
-import { createHash } from "node:crypto";
 import { z } from "zod";
 
 import { conversationLogSchema } from "@/lib/conversations/schema";
@@ -15,11 +14,16 @@ import { consolidateSemanticDuplicates } from "@/lib/embeddings/deduplicate";
 import type { PreparableEmbeddingProvider } from "@/lib/embeddings/types";
 import { deviceIdFromRequest } from "@/lib/persistence/device";
 import { createSQLiteRepository } from "@/lib/persistence/sqlite";
+import { rankingRunIdempotencyKey } from "@/lib/persistence/queue-reconciliation";
 import { analyseWithCodex, getProviderStatuses } from "@/lib/providers/codex-exec";
 import { analyseWithDemo } from "@/lib/providers/demo";
 import { normalizeProviderAnalysis } from "@/lib/providers/normalize";
 import { analyseWithOpenAICompatible } from "@/lib/providers/openai-compatible";
-import type { ProviderAnalysis, ProviderId } from "@/lib/providers/types";
+import {
+  ProviderRequestError,
+  type ProviderAnalysis,
+  type ProviderId,
+} from "@/lib/providers/types";
 import type { RankErrorResponse, RankSuccessResponse } from "@/lib/ranking/api";
 import { rankConversationAsync } from "@/lib/ranking/engine";
 import { rankingInputSchema } from "@/lib/ranking/schema";
@@ -47,6 +51,10 @@ const requestSchema = z.object({
   conversation: conversationLogSchema,
   weights: weightsSchema.optional(),
   previousInput: rankingInputSchema.optional(),
+  queuedTask: z.object({
+    id: z.string().trim().min(1).max(200),
+    revision: z.number().int().positive(),
+  }).optional(),
 });
 
 /** Serialises source IDs, participant roles, and ordering for live providers. */
@@ -76,6 +84,7 @@ async function analyseLiveProvider(
   } catch (error) {
     // Retrying cannot repair output that already failed JSON or schema parsing.
     if (error instanceof SyntaxError || error instanceof z.ZodError) throw error;
+    if (error instanceof ProviderRequestError && !error.retryable) throw error;
     return analyse();
   }
 }
@@ -117,6 +126,7 @@ export async function POST(request: Request) {
     conversation,
     weights = DEFAULT_WEIGHTS,
     previousInput,
+    queuedTask,
   } = parsed.data;
   let analysis: ProviderAnalysis;
 
@@ -153,6 +163,12 @@ export async function POST(request: Request) {
         return errorResponse(502, {
           code: "invalid_provider_output",
           message: "The selected provider returned malformed structured output.",
+        });
+      }
+      if (error instanceof ProviderRequestError) {
+        return errorResponse(error.status === 429 ? 429 : 502, {
+          code: error.status === 429 ? "provider_rate_limited" : "provider_failure",
+          message: error.message,
         });
       }
       return errorResponse(502, {
@@ -280,16 +296,11 @@ export async function POST(request: Request) {
           return [interpretation.id, embeddings.embed([text])[0]];
         }),
       );
-      const idempotencyKey = createHash("sha256")
-        .update(
-          JSON.stringify({
-            provider,
-            conversationId: conversation.conversationId,
-            messages: conversation.messages,
-            weights,
-          }),
-        )
-        .digest("hex");
+      const idempotencyKey = rankingRunIdempotencyKey({
+        provider,
+        conversation,
+        weights,
+      });
       const stored = await repository.persistRankingRun({
         ownerId: deviceId,
         idempotencyKey,
@@ -330,5 +341,14 @@ export async function POST(request: Request) {
     result,
     persistence,
   };
+  if (canPersist && deviceId && queuedTask) {
+    try {
+      await repository.completePendingRankingTask(deviceId, queuedTask, response);
+    } catch {
+      persistence.message = persistence.message
+        ? `${persistence.message} The task queue status could not be updated.`
+        : "The ranking completed, but the task queue status could not be updated.";
+    }
+  }
   return NextResponse.json(response);
 }

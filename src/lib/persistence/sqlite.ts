@@ -6,6 +6,11 @@ import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { cosineSimilarity } from "@/lib/embeddings/similarity";
+import { DEFAULT_WEIGHTS } from "@/lib/ranking/scenarios";
+import {
+  queueResultFromPersistedRun,
+  rankingRunIdempotencyKey,
+} from "./queue-reconciliation";
 import type {
   PersistedRankingRun,
   PersistedRunReference,
@@ -132,6 +137,43 @@ export class SQLiteRankingRepository implements RankingRepository {
     `).run(outcome.id, outcome.ownerId, outcome.domainName ?? null, outcome.embeddingModel, outcome.embeddingVersion, JSON.stringify(outcome), new Date().toISOString());
   }
 
+  /** Atomically resolves an owned review run and the queue result that names it. */
+  async resolveRankingReview(ownerId: string, rankingRunId: string): Promise<boolean> {
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const ownedRun = this.database.prepare(`
+        SELECT r.id FROM ranking_runs r
+        JOIN conversations c ON c.id = r.conversation_id
+        WHERE r.id = ? AND c.user_id = ?
+      `).get(rankingRunId, ownerId);
+      if (!ownedRun) {
+        this.database.exec("ROLLBACK");
+        return false;
+      }
+
+      this.database.prepare("UPDATE ranking_runs SET state = 'decided' WHERE id = ?")
+        .run(rankingRunId);
+      const reviewRows = this.database.prepare(`
+        SELECT id, result_payload FROM queue_tasks
+        WHERE user_id = ? AND state = 'human_review' AND result_payload IS NOT NULL
+      `).all(ownerId) as Array<{ id: string; result_payload: string }>;
+      const now = new Date().toISOString();
+      for (const row of reviewRows) {
+        const result = JSON.parse(row.result_payload) as QueueRankingResult;
+        if (result.persistence.rankingRunId !== rankingRunId) continue;
+        this.database.prepare(`
+          UPDATE queue_tasks SET state = 'decided', updated_at = ?
+          WHERE id = ? AND user_id = ? AND state = 'human_review'
+        `).run(now, row.id, ownerId);
+      }
+      this.database.exec("COMMIT");
+      return true;
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   /** Filters device-owned outcomes and ranks them with cosine similarity in process. */
   async findSimilarOutcomes(query: SimilarOutcomeQuery): Promise<SimilarTaskOutcome[]> {
     const rows = this.database.prepare(`
@@ -234,6 +276,115 @@ export class SQLiteRankingRepository implements RankingRepository {
     return rows.map(queueTaskFromRow);
   }
 
+  /** Repairs legacy pending tasks only from exact owner-scoped persisted runs. */
+  async reconcilePendingRankingTasks(ownerId: string): Promise<number> {
+    const pendingRows = this.database.prepare(
+      "SELECT * FROM queue_tasks WHERE user_id = ? AND state = 'pending'",
+    ).all(ownerId) as QueueRow[];
+    let reconciled = 0;
+    for (const row of pendingRows) {
+      const task = queueTaskFromRow(row);
+      const idempotencyKey = rankingRunIdempotencyKey({
+        provider: task.request.provider,
+        conversation: task.request.conversation,
+        weights: task.request.weights ?? DEFAULT_WEIGHTS,
+      });
+      const runRow = this.database.prepare(`
+        SELECT r.id, r.conversation_id, r.payload, r.state FROM ranking_runs r
+        JOIN conversations c ON c.id = r.conversation_id
+        WHERE c.user_id = ? AND c.external_id = ? AND r.idempotency_key = ?
+        ORDER BY r.created_at DESC LIMIT 1
+      `).get(
+        ownerId,
+        task.externalConversationId,
+        idempotencyKey,
+      ) as RunRow | undefined;
+      if (!runRow) continue;
+      const reference: PersistedRunReference = {
+        id: runRow.id,
+        conversationId: runRow.conversation_id,
+        state: runRow.state as PersistedRunReference["state"],
+        duplicate: true,
+      };
+      const completed = await this.completePendingRankingTask(
+        ownerId,
+        { id: task.id, revision: task.revision },
+        queueResultFromPersistedRun(
+          JSON.parse(runRow.payload) as PersistedRankingRun,
+          reference,
+        ),
+      );
+      if (completed) reconciled += 1;
+    }
+    return reconciled;
+  }
+
+  /** Atomically renames queue, conversation, and stored run payload snapshots. */
+  async renameConversation(
+    ownerId: string,
+    currentConversationId: string,
+    nextConversationId: string,
+  ): Promise<boolean> {
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const queueRow = this.database.prepare(
+        "SELECT * FROM queue_tasks WHERE user_id = ? AND external_id = ?",
+      ).get(ownerId, currentConversationId) as QueueRow | undefined;
+      const conversationRow = this.database.prepare(
+        "SELECT id, payload FROM conversations WHERE user_id = ? AND external_id = ?",
+      ).get(ownerId, currentConversationId) as { id: string; payload: string } | undefined;
+      const targetExists = Boolean(
+        this.database.prepare(
+          "SELECT 1 FROM queue_tasks WHERE user_id = ? AND external_id = ?",
+        ).get(ownerId, nextConversationId) ??
+        this.database.prepare(
+          "SELECT 1 FROM conversations WHERE user_id = ? AND external_id = ?",
+        ).get(ownerId, nextConversationId),
+      );
+      if ((!queueRow && !conversationRow) || targetExists) {
+        this.database.exec("ROLLBACK");
+        return false;
+      }
+
+      const now = new Date().toISOString();
+      if (queueRow) {
+        const request = JSON.parse(queueRow.request_payload) as QueueRankingRequest;
+        request.conversation.conversationId = nextConversationId;
+        const requestPayload = JSON.stringify(request);
+        const requestHash = createHash("sha256").update(requestPayload).digest("hex");
+        this.database.prepare(`
+          UPDATE queue_tasks SET external_id = ?, request_hash = ?, request_payload = ?, updated_at = ?
+          WHERE id = ? AND user_id = ?
+        `).run(nextConversationId, requestHash, requestPayload, now, queueRow.id, ownerId);
+      }
+
+      if (conversationRow) {
+        const conversation = JSON.parse(conversationRow.payload) as PersistedRankingRun["conversation"];
+        conversation.conversationId = nextConversationId;
+        this.database.prepare(`
+          UPDATE conversations SET external_id = ?, payload = ?, updated_at = ?
+          WHERE id = ? AND user_id = ?
+        `).run(nextConversationId, JSON.stringify(conversation), now, conversationRow.id, ownerId);
+
+        const runRows = this.database.prepare(
+          "SELECT id, payload FROM ranking_runs WHERE conversation_id = ?",
+        ).all(conversationRow.id) as Array<{ id: string; payload: string }>;
+        for (const runRow of runRows) {
+          const run = JSON.parse(runRow.payload) as PersistedRankingRun;
+          run.conversation.conversationId = nextConversationId;
+          this.database.prepare("UPDATE ranking_runs SET payload = ? WHERE id = ?")
+            .run(JSON.stringify(run), runRow.id);
+        }
+      }
+
+      this.database.exec("COMMIT");
+      return true;
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   /** Atomically leases a bounded batch, including work abandoned after restart. */
   async claimRankingTasks(
     ownerId: string,
@@ -283,6 +434,28 @@ export class SQLiteRankingRepository implements RankingRepository {
         lease_token = NULL, lease_expires_at = NULL, updated_at = ?
       WHERE id = ? AND user_id = ? AND revision = ? AND state = 'processing' AND lease_token = ?
     `).run(state, JSON.stringify(result), new Date().toISOString(), claim.id, claim.request.ownerId, claim.revision, claim.leaseToken);
+    return updated.changes > 0;
+  }
+
+  /** Commits a synchronous result only when the named queued revision is pending. */
+  async completePendingRankingTask(
+    ownerId: string,
+    reference: Pick<QueuedRankingTask, "id" | "revision">,
+    result: QueueRankingResult,
+  ): Promise<boolean> {
+    const state = result.result.uncertain ? "human_review" : "decided";
+    const updated = this.database.prepare(`
+      UPDATE queue_tasks SET state = ?, result_payload = ?, error_message = NULL,
+        lease_token = NULL, lease_expires_at = NULL, updated_at = ?
+      WHERE id = ? AND user_id = ? AND revision = ? AND state = 'pending'
+    `).run(
+      state,
+      JSON.stringify(result),
+      new Date().toISOString(),
+      reference.id,
+      ownerId,
+      reference.revision,
+    );
     return updated.changes > 0;
   }
 

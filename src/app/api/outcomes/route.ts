@@ -118,7 +118,8 @@ export async function POST(request: Request) {
         embeddingVersion: embeddings.model.version,
       });
     }
-    return NextResponse.json({ saved: true, decision });
+    const resolved = await repository.resolveRankingReview(userId, rankingRunId);
+    return NextResponse.json({ saved: true, decision, resolved });
   } catch {
     return NextResponse.json(
       { error: "The outcome could not be saved." },
