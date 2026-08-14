@@ -1,4 +1,4 @@
-/** @file Ranking-policy and local-provider settings dialogs. */
+/** @file Ranking-policy and analysis-provider settings dialogs. */
 
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -142,7 +142,7 @@ export function WeightSettings({
   );
 }
 
-/** Explains the adapter boundary and reports locally available providers. */
+/** Explains the adapter boundary and reports configured providers. */
 export function ProviderSettings({
   providers,
   selectedProvider,
@@ -166,7 +166,7 @@ export function ProviderSettings({
       </DialogTrigger>
       <DialogContent className="sm:max-w-[520px]">
         <DialogHeader>
-          <DialogTitle className="font-heading">Local provider adapters</DialogTitle>
+          <DialogTitle className="font-heading">Analysis providers</DialogTitle>
           <DialogDescription>
             Candidate extraction is swappable; scoring and abstention remain application-owned.
           </DialogDescription>
@@ -214,9 +214,9 @@ export function ProviderSettings({
           ))}
         </div>
         <p className="text-[11px] leading-5 text-muted-foreground">
-          The walkthrough uses deterministic fixtures so it works without an account. The
-          documented API route can ask an installed Codex CLI—or Codex with Ollama—to generate
-          live structured candidates.
+          The walkthrough works without an account. Live candidates can come from an installed
+          Codex CLI or a server-configured OpenAI-compatible API; credentials never enter the
+          browser.
         </p>
       </DialogContent>
     </Dialog>

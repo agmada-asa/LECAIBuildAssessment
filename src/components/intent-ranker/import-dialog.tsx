@@ -85,13 +85,13 @@ export function ConversationImportDialog({
     if (file) void loadFile(file);
   }
 
-  /** Runs the complete server pipeline and closes only after success. */
+  /** Closes the preview immediately, then lets the workbench present request progress. */
   async function submit() {
     if (!preview || submitting) return;
     setSubmitting(true);
+    setOpen(false);
     try {
       await onAnalyze(preview, provider);
-      setOpen(false);
       setError("");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Analysis failed.");

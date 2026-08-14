@@ -121,6 +121,21 @@ export function ConversationPanel({
               aria-label="Add a follow-up message"
               value={customMessage}
               onChange={(event) => onCustomMessageChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (
+                  event.key !== "Enter" ||
+                  event.shiftKey ||
+                  event.nativeEvent.isComposing ||
+                  isProcessing ||
+                  !customMessage.trim()
+                ) {
+                  return;
+                }
+
+                // Plain Enter sends; Shift+Enter remains available for multiline messages.
+                event.preventDefault();
+                onAddCustomMessage();
+              }}
               disabled={isProcessing}
               placeholder="Add a follow-up to test the ranking…"
               className="min-h-20 resize-none rounded-xl bg-background pr-12 text-xs"
