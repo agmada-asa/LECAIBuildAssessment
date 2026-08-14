@@ -387,13 +387,14 @@ describe("IntentRanker", () => {
     await user.click(screen.getByRole("button", { name: "Analyze a log" }));
     await user.type(
       screen.getByRole("textbox", { name: "Paste conversation log" }),
-      "request-17: Send the raw rows.\nacknowledgement: Understood.\nreframe: Make it CSV.",
+      "User: Send the raw rows.\nAssistant: Understood.\nUser: Make it CSV.",
     );
     await user.click(screen.getByRole("button", { name: "Preview conversation" }));
 
     expect(screen.getByRole("heading", { name: "Message preview" })).toBeInTheDocument();
-    expect(screen.getAllByText("request-17").length).toBeGreaterThan(0);
-    expect(screen.getByText("acknowledgement")).toBeInTheDocument();
+    expect(screen.getAllByText("M1").length).toBeGreaterThan(0);
+    expect(screen.getByText("Assistant: Understood.")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Analyze 3 messages" }));
 
@@ -403,9 +404,9 @@ describe("IntentRanker", () => {
     expect(queueCall).toBeTruthy();
     const body = JSON.parse((rankCall?.[1] as RequestInit).body as string);
     expect(body.conversation.messages.map((message: { id: string }) => message.id)).toEqual([
-      "request-17",
-      "acknowledgement",
-      "reframe",
+      "M1",
+      "M2",
+      "M3",
     ]);
     expect(screen.getByText("Analyzed by Deterministic fallback")).toBeInTheDocument();
   });
@@ -455,7 +456,7 @@ describe("IntentRanker", () => {
     expect(screen.queryByRole("heading", { name: "Plausible readings" })).not.toBeInTheDocument();
   });
 
-  it("generates a follow-up ID that cannot collide with imported source IDs", async () => {
+  it("continues the generated ID sequence when adding a follow-up", async () => {
     const scenario = getScenario("finance-reframe");
     const log = {
       conversationId: "source-log",
@@ -514,8 +515,8 @@ describe("IntentRanker", () => {
     const requestBody = JSON.parse((rankCalls.at(-1)?.[1] as RequestInit).body as string);
     expect(requestBody.conversation.messages.map((message: { id: string }) => message.id)).toEqual([
       "M1",
+      "M2",
       "M3",
-      "M4",
     ]);
     expect(requestBody.previousInput.interpretations).toEqual(scenario.interpretations);
   });
@@ -679,7 +680,7 @@ describe("IntentRanker", () => {
     const textarea = screen.getByRole("textbox", { name: "Paste conversation log" });
     expect(textarea).toHaveAttribute(
       "placeholder",
-      "request-17: Prepare the June report.\nfollow-up: Send the raw rows.",
+      "Prepare the June report.\nSend the raw rows.",
     );
   });
 
