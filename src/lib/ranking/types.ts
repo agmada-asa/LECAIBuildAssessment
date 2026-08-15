@@ -2,7 +2,7 @@
  * @file Shared domain types for the intent-ranking engine.
  *
  * Keeping these types independent from React makes the ranking logic usable by
- * the browser demo, API routes, command-line providers, and automated tests.
+ * the browser workbench, API routes, command-line providers, and automated tests.
  */
 
 export type SignalKey = "semantic" | "constraints" | "history";
@@ -98,28 +98,15 @@ export type TaskBoundary = {
   reason: string;
 };
 
-/** Minimal input required by the ranker, independent of walkthrough fixtures. */
+/** Minimal input required by the ranker, independent of its callers. */
 export type RankingInput = {
   interpretations: Interpretation[];
   constraintRules: ConstraintRule[];
   history: HistoricalTask[];
-  /** Semantic task switches detected upstream; absent for legacy fixtures. */
+  /** Semantic task switches detected upstream; absent from older stored inputs. */
   taskBoundaries?: TaskBoundary[];
-  /** Absent only for legacy fixtures and persisted results. */
+  /** Absent only from ranking inputs persisted before actionability gating. */
   conversationAssessment?: ConversationAssessment;
-};
-
-export type Scenario = RankingInput & {
-  id: string;
-  title: string;
-  shortTitle: string;
-  description: string;
-  userName: string;
-  userRole: string;
-  messages: ConversationMessage[];
-  interpretations: Interpretation[];
-  constraintRules: ConstraintRule[];
-  history: HistoricalTask[];
 };
 
 export type Evidence = {
@@ -248,6 +235,8 @@ export type RankingChange = {
 export type InfluentialAxis = {
   key: SignalKey;
   weight: number;
+  /** Weighted score advantage over the strongest competing candidate. */
+  contribution: number;
   explanation: string;
 };
 

@@ -8,7 +8,8 @@
 import { describe, expect, it } from "vitest";
 
 import { extractConstraints, rankConversation, reweightRankingResult } from "./engine";
-import { DEFAULT_WEIGHTS, getScenario } from "./scenarios";
+import { DEFAULT_WEIGHTS } from "./policy";
+import { getScenario } from "./test-scenarios";
 import type {
   ConstraintRule,
   ConversationMessage,
@@ -219,7 +220,7 @@ describe("rankConversation", () => {
 
   it("moves the CSV export to first after the explicit contradiction", () => {
     const scenario = getScenario("finance-reframe");
-    const result = rankConversation(scenario, scenario.messages, DEFAULT_WEIGHTS);
+    const result = rankConversation(scenario, scenario.messages, DEFAULT_WEIGHTS, scenario);
 
     expect(result.ranking[0].id).toBe("csv-export");
     expect(result.ranking[0].previousRank).toBeGreaterThan(1);
@@ -229,7 +230,7 @@ describe("rankConversation", () => {
 
   it("preserves every previous score and returns per-axis, total, confidence, and rank deltas", () => {
     const scenario = getScenario("finance-reframe");
-    const result = rankConversation(scenario, scenario.messages, DEFAULT_WEIGHTS);
+    const result = rankConversation(scenario, scenario.messages, DEFAULT_WEIGHTS, scenario);
 
     expect(result.ranking).toHaveLength(3);
     result.ranking.forEach((candidate) => {
@@ -262,7 +263,7 @@ describe("rankConversation", () => {
 
   it("explains the previous winner falling, the new winner rising, and the selected weight", () => {
     const scenario = getScenario("finance-reframe");
-    const result = rankConversation(scenario, scenario.messages, DEFAULT_WEIGHTS);
+    const result = rankConversation(scenario, scenario.messages, DEFAULT_WEIGHTS, scenario);
 
     expect(result.rankingChange).toMatchObject({
       messageId: "M3",
@@ -285,6 +286,7 @@ describe("rankConversation", () => {
       scenario,
       scenario.messages.slice(0, 2),
       DEFAULT_WEIGHTS,
+      scenario,
     );
 
     expect(result.rankingChange).toMatchObject({ winnerChanged: false });
@@ -520,9 +522,201 @@ describe("rankConversation", () => {
     expect(result.ranking.every((candidate) => candidate.previous === undefined)).toBe(true);
   });
 
-  it("separates changed evidence from evidence that remained applicable", () => {
+  it("retrospectively compares a complete initial import with its preceding prefix", () => {
     const scenario = getScenario("finance-reframe");
     const result = rankConversation(scenario, scenario.messages, DEFAULT_WEIGHTS);
+
+    expect(result.rankingChange).toMatchObject({
+      winnerChanged: true,
+      previousWinner: { id: "slide-deck" },
+      currentWinner: { id: result.ranking[0].id },
+    });
+    expect(result.ranking.every((candidate) => candidate.previous !== undefined)).toBe(true);
+    expect(result.ranking.every((candidate) => candidate.deltas !== undefined)).toBe(true);
+  });
+
+  it("matches paraphrased candidates across provider reruns by canonical decision", () => {
+    const previousInput = {
+      interpretations: [
+        {
+          id: "send-report-old",
+          title: "Send the weekly report",
+          summary: "Email leadership a weekly performance report.",
+          semanticTerms: ["weekly report", "leadership", "email"],
+          features: ["topic:performance", "format:report", "audience:leadership"],
+        },
+        {
+          id: "dashboard-old",
+          title: "Publish the dashboard",
+          summary: "Publish a live performance dashboard.",
+          semanticTerms: ["performance", "dashboard", "live"],
+          features: ["topic:performance", "format:dashboard", "audience:operations"],
+        },
+        {
+          id: "spreadsheet-old",
+          title: "Maintain the spreadsheet",
+          summary: "Maintain a shared performance spreadsheet.",
+          semanticTerms: ["performance", "spreadsheet", "shared"],
+          features: ["topic:performance", "format:spreadsheet", "audience:operations"],
+        },
+      ],
+      constraintRules: [],
+      history: [],
+    };
+    const currentInput = {
+      ...previousInput,
+      interpretations: [
+        {
+          ...previousInput.interpretations[0],
+          id: "email-leadership-update-new",
+          title: "Email leadership the weekly update",
+        },
+        {
+          ...previousInput.interpretations[1],
+          id: "live-view-new",
+          title: "Create a live performance view",
+        },
+        {
+          ...previousInput.interpretations[2],
+          id: "shared-tracker-new",
+          title: "Keep a shared performance tracker",
+        },
+      ],
+    };
+    const result = rankConversation(
+      currentInput,
+      [
+        message("M1", "Send the weekly performance report to leadership."),
+        message("M2", "Email it to leadership every Monday."),
+      ],
+      DEFAULT_WEIGHTS,
+      previousInput,
+    );
+
+    expect(result.ranking.every((candidate) => candidate.previous !== undefined)).toBe(true);
+    expect(result.rankingChange).toMatchObject({ winnerChanged: false });
+    expect(result.rankingChange?.currentWinnerExplanation).toContain("remained #1");
+    expect(result.rankingChange?.currentWinnerExplanation).not.toContain("newly introduced");
+  });
+
+  it("does not reuse a title-derived ID when its canonical decision conflicts", () => {
+    const previousInput = {
+      interpretations: [
+        {
+          id: "prepare-the-update",
+          title: "Prepare the update",
+          summary: "Prepare the update as presentation slides.",
+          semanticTerms: ["prepare update", "presentation", "slides"],
+          features: ["format:slides"],
+        },
+        {
+          id: "prepare-the-memo",
+          title: "Prepare the memo",
+          summary: "Prepare a written update memo.",
+          semanticTerms: ["prepare update", "memo", "written"],
+          features: ["format:memo"],
+        },
+        {
+          id: "prepare-the-dashboard",
+          title: "Prepare the dashboard",
+          summary: "Prepare an interactive update dashboard.",
+          semanticTerms: ["prepare update", "dashboard", "interactive"],
+          features: ["format:dashboard"],
+        },
+      ],
+      constraintRules: [
+        rule("slides-required", "slides", "format", "slides"),
+      ],
+      history: [],
+    };
+    const currentInput = {
+      interpretations: [
+        {
+          ...previousInput.interpretations[0],
+          summary: "Prepare the update as a machine-readable CSV export.",
+          semanticTerms: ["prepare update", "machine-readable", "CSV"],
+          features: ["format:csv"],
+        },
+        previousInput.interpretations[1],
+        previousInput.interpretations[2],
+      ],
+      constraintRules: [
+        ...previousInput.constraintRules,
+        rule("csv-required", "CSV instead", "format", "csv"),
+      ],
+      history: [],
+    };
+    const result = rankConversation(
+      currentInput,
+      [
+        message("M1", "Prepare the update as slides."),
+        message("M2", "Prepare the update as CSV instead."),
+      ],
+      { semantic: 0, constraints: 100, history: 0 },
+      previousInput,
+    );
+    const csv = result.ranking.find((candidate) => candidate.id === "prepare-the-update");
+
+    expect(csv?.rank).toBe(1);
+    expect(csv?.previousRank).toBeUndefined();
+    expect(csv?.previous).toBeUndefined();
+    expect(csv?.deltas).toBeUndefined();
+    expect(result.rankingChange).toMatchObject({
+      winnerChanged: true,
+      previousWinner: { id: "prepare-the-update" },
+      currentWinner: { id: "prepare-the-update" },
+    });
+    expect(result.rankingChange?.currentWinnerExplanation).toContain("newly introduced");
+    expect(result.rankingChange?.currentWinnerExplanation).not.toContain("remained #1");
+  });
+
+  it("reports the axis that actually separates the leading candidates", () => {
+    const input = {
+      interpretations: [
+        {
+          id: "report",
+          title: "Write the incident report",
+          summary: "Write a report about the incident.",
+          semanticTerms: ["incident report", "write report", "incident"],
+          features: ["format:report"],
+        },
+        {
+          id: "dashboard",
+          title: "Build an incident dashboard",
+          summary: "Build a dashboard for the incident.",
+          semanticTerms: ["incident dashboard", "dashboard", "monitor"],
+          features: ["format:dashboard"],
+        },
+        {
+          id: "slides",
+          title: "Prepare incident slides",
+          summary: "Prepare slides about the incident.",
+          semanticTerms: ["incident slides", "slides", "presentation"],
+          features: ["format:slides"],
+        },
+      ],
+      constraintRules: [],
+      history: [],
+    };
+    const result = rankConversation(
+      input,
+      [message("M1", "Write the incident report now.")],
+      DEFAULT_WEIGHTS,
+    );
+
+    expect(result.mostInfluentialAxis.key).toBe("semantic");
+    expect(result.mostInfluentialAxis.explanation).toMatch(/separat/i);
+    expect(result.mostInfluentialAxis.explanation).toContain(
+      "constraint consistency most heavily (50%)",
+    );
+    expect(result.mostInfluentialAxis.explanation).not.toContain(
+      "current conversational language the largest share",
+    );
+  });
+
+  it("separates changed evidence from evidence that remained applicable", () => {
+    const scenario = getScenario("finance-reframe");
+    const result = rankConversation(scenario, scenario.messages, DEFAULT_WEIGHTS, scenario);
     const csv = result.ranking.find((candidate) => candidate.id === "csv-export")!;
 
     expect(csv.change?.addedEvidence.some((evidence) => evidence.messageId === "M3")).toBe(true);

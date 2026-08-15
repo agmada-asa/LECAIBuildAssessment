@@ -27,6 +27,58 @@ export type TaskFamilyConfidence = {
   margin: number;
 };
 
+/** Groups valid candidates using the same complete-linkage decision policy. */
+function taskFamilies(
+  ranking: RankedInterpretation[],
+): RankedInterpretation[][] {
+  const families: RankedInterpretation[][] = [];
+  ranking
+    .filter((candidate) => candidate.valid !== false)
+    .forEach((candidate) => {
+      const compatibleFamily = families.find((members) =>
+        members.every((member) => belongsToSameTaskFamily(candidate, member)),
+      );
+      if (compatibleFamily) compatibleFamily.push(candidate);
+      else families.push([candidate]);
+    });
+  return families;
+}
+
+/** Returns the representative of the strongest family opposing the winner. */
+export function strongestCompetingTaskCandidate(
+  ranking: RankedInterpretation[],
+): RankedInterpretation | undefined {
+  const families = taskFamilies(ranking);
+  const winner = ranking.find((candidate) => candidate.valid !== false);
+  const winnerFamily = winner
+    ? families.find((family) => family.includes(winner))
+    : undefined;
+  return families
+    .filter((family) => family !== winnerFamily)
+    .sort(
+      (left, right) =>
+        right.reduce((total, candidate) => total + candidate.confidence, 0) -
+        left.reduce((total, candidate) => total + candidate.confidence, 0),
+    )[0]?.[0];
+}
+
+/** Returns true when candidates choose different values for one decision axis. */
+function haveCanonicalConflict(
+  left: RankedInterpretation,
+  right: RankedInterpretation,
+): boolean {
+  const leftValues = new Map(
+    left.features.map((feature) =>
+      feature.toLowerCase().split(":", 2) as [string, string],
+    ),
+  );
+  return right.features.some((feature) => {
+    const [dimension, value] = feature.toLowerCase().split(":", 2);
+    const leftValue = leftValues.get(dimension);
+    return leftValue !== undefined && leftValue !== value;
+  });
+}
+
 /**
  * Detects provider variants that describe the same well-specified task.
  *
@@ -38,6 +90,9 @@ function belongsToSameTaskFamily(
   left: RankedInterpretation,
   right: RankedInterpretation,
 ): boolean {
+  // Conflicting canonical values represent decisions a reviewer may need to
+  // distinguish, even when the surrounding task language is nearly identical.
+  if (haveCanonicalConflict(left, right)) return false;
   const leftFeatures = new Set(left.features.map((feature) => feature.toLowerCase()));
   const rightFeatures = new Set(right.features.map((feature) => feature.toLowerCase()));
   const shared = [...leftFeatures].filter((feature) => rightFeatures.has(feature)).length;
@@ -54,9 +109,9 @@ function belongsToSameTaskFamily(
 /**
  * Aggregates exact-candidate confidence into stable task-family confidence.
  *
- * Invalid candidates do not contribute. Families are transitive, so three
- * closely related framings remain together even when the first and third use
- * somewhat different language.
+ * Invalid candidates do not contribute. A candidate joins a family only when
+ * it is compatible with every existing member. This complete-linkage rule
+ * prevents an underspecified candidate from bridging conflicting decisions.
  */
 export function calculateTaskFamilyConfidence(
   ranking: RankedInterpretation[],
@@ -64,46 +119,22 @@ export function calculateTaskFamilyConfidence(
   const validCandidates = ranking.filter((candidate) => candidate.valid !== false);
   if (!validCandidates.length) return { confidence: 0, margin: 0 };
 
-  const parents = validCandidates.map((_, index) => index);
-  const find = (index: number): number => {
-    let root = index;
-    while (parents[root] !== root) root = parents[root];
-    while (parents[index] !== index) {
-      const parent = parents[index];
-      parents[index] = root;
-      index = parent;
-    }
-    return root;
-  };
-  const union = (left: number, right: number): void => {
-    const leftRoot = find(left);
-    const rightRoot = find(right);
-    if (leftRoot !== rightRoot) parents[rightRoot] = leftRoot;
-  };
+  const families = taskFamilies(ranking);
 
-  validCandidates.forEach((candidate, leftIndex) => {
-    validCandidates.slice(leftIndex + 1).forEach((other, offset) => {
-      if (belongsToSameTaskFamily(candidate, other)) {
-        union(leftIndex, leftIndex + offset + 1);
-      }
-    });
-  });
+  const confidenceByFamily = families.map((members) =>
+    members.reduce(
+      (total, candidate) => total + candidate.confidence,
+      0,
+    ),
+  );
 
-  const confidenceByFamily = new Map<number, number>();
-  validCandidates.forEach((candidate, index) => {
-    const root = find(index);
-    confidenceByFamily.set(root, (confidenceByFamily.get(root) ?? 0) + candidate.confidence);
-  });
-
-  const leaderIndex = validCandidates.indexOf(ranking[0]);
-  if (leaderIndex < 0) return { confidence: 0, margin: 0 };
-  const leaderRoot = find(leaderIndex);
-  const confidence = Math.min(confidenceByFamily.get(leaderRoot) ?? 0, 1);
+  const leaderFamilyIndex = families.findIndex((members) =>
+    members.includes(validCandidates[0]),
+  );
+  const confidence = Math.min(confidenceByFamily[leaderFamilyIndex] ?? 0, 1);
   const strongestAlternative = Math.max(
     0,
-    ...[...confidenceByFamily]
-      .filter(([root]) => root !== leaderRoot)
-      .map(([, familyConfidence]) => familyConfidence),
+    ...confidenceByFamily.filter((_, familyIndex) => familyIndex !== leaderFamilyIndex),
   );
 
   return {

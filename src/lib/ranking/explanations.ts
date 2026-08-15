@@ -1,6 +1,7 @@
 /** @file Grounded candidate, winner-movement, and policy explanations. */
 
 import { normaliseWeights } from "./scoring";
+import { strongestCompetingTaskCandidate } from "./confidence";
 import type {
   ConversationMessage,
   Evidence,
@@ -18,26 +19,41 @@ export const SIGNAL_LABELS: Record<SignalKey, string> = {
   history: "historical pattern matching",
 };
 
-/** Returns the dominant selected axis and the policy reason shown to reviewers. */
+/** Returns the axis contributing most against the strongest competing task family. */
 export function influentialAxis(
   weights: SignalWeights,
+  ranking: RankedInterpretation[],
 ): RankingResult["mostInfluentialAxis"] {
   const effectiveWeights = normaliseWeights(weights);
-  const strongestWeight = (
-    Object.entries(effectiveWeights) as [SignalKey, number][]
-  ).sort((left, right) => right[1] - left[1])[0];
-  const rationales: Record<SignalKey, string> = {
-    semantic: "the selected policy gives current conversational language the largest share",
+  const validCandidates = ranking.filter((candidate) => candidate.valid !== false);
+  const winner = validCandidates[0] ?? ranking[0];
+  const runnerUp = strongestCompetingTaskCandidate(ranking);
+  const contributions = (Object.keys(effectiveWeights) as SignalKey[]).map((key) => ({
+    key,
+    weight: effectiveWeights[key],
+    contribution: runnerUp
+      ? effectiveWeights[key] * (winner.signals[key] - runnerUp.signals[key])
+      : effectiveWeights[key] * winner.signals[key],
+  }));
+  const strongest = contributions.sort(
+    (left, right) => right.contribution - left.contribution || right.weight - left.weight,
+  )[0];
+  const policyLeader = (Object.entries(effectiveWeights) as [SignalKey, number][]).sort(
+    (left, right) => right[1] - left[1],
+  )[0];
+  const policyRationales: Record<SignalKey, string> = {
+    semantic: "current conversational language is the most direct evidence when explicit requirements do not resolve the choice",
     constraints: "explicit instructions should override resemblance and prior habits",
-    history: "the selected policy prioritises patterns from accepted prior outcomes",
+    history: "accepted prior outcomes should guide recurring requests when current evidence is limited",
   };
 
   return {
-    key: strongestWeight[0],
-    weight: Math.round(strongestWeight[1] * 1000) / 1000,
-    explanation: `${SIGNAL_LABELS[strongestWeight[0]]} received the largest weight (${Math.round(
-      strongestWeight[1] * 100,
-    )}%) because ${rationales[strongestWeight[0]]}.`,
+    key: strongest.key,
+    weight: Math.round(strongest.weight * 1000) / 1000,
+    contribution: Math.round(strongest.contribution * 1000) / 1000,
+    explanation: `${SIGNAL_LABELS[strongest.key]} contributed most ${
+      runnerUp ? "to separating the leading task family from its strongest alternative" : "to the leading task family"
+    } (${Math.round(strongest.contribution * 100)} weighted points) under its policy weight (${Math.round(strongest.weight * 100)}%). The configured policy weights ${SIGNAL_LABELS[policyLeader[0]]} most heavily (${Math.round(policyLeader[1] * 100)}%) because ${policyRationales[policyLeader[0]]}.`,
   };
 }
 
@@ -103,9 +119,16 @@ export function buildRankingChange(
   const previousWinner = previous?.[0];
   if (!currentWinner || !previousWinner || !newestMessage) return undefined;
 
-  const previousWinnerNow = current.find((candidate) => candidate.id === previousWinner.id);
-  const currentWinnerBefore = previous?.find((candidate) => candidate.id === currentWinner.id);
-  const winnerChanged = previousWinner.id !== currentWinner.id;
+  // compareCandidates records the matched prior rank for both exact IDs and
+  // canonical paraphrases. Use that continuity instead of provider-generated
+  // IDs, which can change whenever a provider rewords a candidate title.
+  const previousWinnerNow = current.find(
+    (candidate) => candidate.previousRank === previousWinner.rank,
+  );
+  const currentWinnerBefore = currentWinner.previousRank
+    ? previous.find((candidate) => candidate.rank === currentWinner.previousRank)
+    : undefined;
+  const winnerChanged = previousWinnerNow !== currentWinner;
   const fall = strongestChange(previousWinnerNow, "fell");
   const rise = strongestChange(currentWinner, "rose");
 

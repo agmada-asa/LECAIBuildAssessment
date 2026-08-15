@@ -14,6 +14,7 @@ import {
 import {
   calculateTaskFamilyConfidence,
   HUMAN_REVIEW_POLICY,
+  strongestCompetingTaskCandidate,
 } from "./confidence";
 import {
   buildRankingChange,
@@ -26,6 +27,7 @@ import { rankSnapshot, round, softmax, weightedTotal } from "./scoring";
 import { embeddingProvider } from "@/lib/embeddings/provider";
 import type { EmbeddingProvider, PreparableEmbeddingProvider } from "@/lib/embeddings/types";
 import { SEMANTIC_RECENCY_DECAY } from "./scoring";
+import { tokenOverlap } from "./text";
 import type {
   ConversationMessage,
   HumanReviewReason,
@@ -38,6 +40,61 @@ import type {
 
 export { extractConstraints };
 
+/** Rejects continuity when candidate kind or canonical feature values conflict. */
+function candidatesHaveCompatibleIdentity(
+  current: RankedInterpretation,
+  previous: RankedInterpretation,
+): boolean {
+  if ((current.kind ?? "task") !== (previous.kind ?? "task")) {
+    return false;
+  }
+  const valuesByDimension = (features: string[]) => {
+    const values = new Map<string, Set<string>>();
+    features.forEach((feature) => {
+      const [dimension, value] = feature.toLowerCase().split(":", 2);
+      values.set(dimension, new Set([...(values.get(dimension) ?? []), value]));
+    });
+    return values;
+  };
+  const currentValues = valuesByDimension(current.features);
+  const previousValues = valuesByDimension(previous.features);
+  const conflicts = [...currentValues].some(([dimension, values]) => {
+    const priorValues = previousValues.get(dimension);
+    return priorValues && ![...values].some((value) => priorValues.has(value));
+  });
+  return !conflicts;
+}
+
+/** Returns whether differently identified provider candidates encode the same decision. */
+function candidatesRepresentSameDecision(
+  current: RankedInterpretation,
+  previous: RankedInterpretation,
+): { matches: boolean; score: number } {
+  if (!candidatesHaveCompatibleIdentity(current, previous)) {
+    return { matches: false, score: 0 };
+  }
+
+  const currentFeatures = new Set(current.features.map((feature) => feature.toLowerCase()));
+  const previousFeatures = new Set(previous.features.map((feature) => feature.toLowerCase()));
+  const shared = [...currentFeatures].filter((feature) => previousFeatures.has(feature)).length;
+  const featureRatio = shared / Math.max(1, Math.min(currentFeatures.size, previousFeatures.size));
+  const proseOverlap = tokenOverlap(
+    `${current.title} ${current.summary}`,
+    `${previous.title} ${previous.summary}`,
+  );
+  const termOverlap = tokenOverlap(
+    current.semanticTerms.join(" "),
+    previous.semanticTerms.join(" "),
+  );
+  const matches =
+    (shared >= 2 && featureRatio >= 0.6) ||
+    (shared >= 1 && featureRatio === 1 && Math.max(proseOverlap, termOverlap) >= 0.25);
+  return {
+    matches,
+    score: featureRatio * 0.6 + proseOverlap * 0.2 + termOverlap * 0.2,
+  };
+}
+
 /** Adds prior values, signed deltas, and evidence changes to matching candidates. */
 function compareCandidates(
   current: RankedInterpretation[],
@@ -45,10 +102,28 @@ function compareCandidates(
   newestMessage: ConversationMessage | undefined,
 ): void {
   const previousById = new Map(previous?.map((item) => [item.id, item]) ?? []);
+  const usedPreviousIds = new Set<string>();
 
   current.forEach((item) => {
-    const prior = previousById.get(item.id);
+    const exactPrior = previousById.get(item.id);
+    // Provider IDs are regenerated from titles, so equality is only a lookup
+    // hint. Conflicting kind or feature values represent a new decision.
+    const compatibleExactPrior = exactPrior &&
+      !usedPreviousIds.has(exactPrior.id) &&
+      candidatesHaveCompatibleIdentity(item, exactPrior)
+      ? exactPrior
+      : undefined;
+    const prior = compatibleExactPrior ?? previous
+      ?.filter((candidate) => !usedPreviousIds.has(candidate.id))
+      .map((candidate) => ({
+        candidate,
+        ...candidatesRepresentSameDecision(item, candidate),
+      }))
+      .filter((candidate) => candidate.matches)
+      .sort((left, right) => right.score - left.score)[0]
+      ?.candidate;
     if (prior && newestMessage) {
+      usedPreviousIds.add(prior.id);
       item.previousRank = prior.rank;
       item.previous = {
         rank: prior.rank,
@@ -221,11 +296,13 @@ export function rankConversation(
   }
   const uncertaintyReason = humanReviewReason?.message;
   const uncertain = Boolean(humanReviewReason);
+  const strongestAlternative = strongestCompetingTaskCandidate(current.ranking);
   const clarificationQuestion = uncertain &&
+    strongestAlternative &&
     !["none_above", "insufficient_context"].includes(humanReviewReason?.code ?? "")
-    ? generateClarificationQuestion(current.ranking[0], current.ranking[1])
+    ? generateClarificationQuestion(current.ranking[0], strongestAlternative)
     : undefined;
-  const mostInfluentialAxis = influentialAxis(weights);
+  const mostInfluentialAxis = influentialAxis(weights, current.ranking);
   const rankingChange = buildRankingChange(
     current.ranking,
     previous?.ranking,
@@ -366,7 +443,8 @@ export function reweightRankingResult(
       : evaluateHumanReview(ranking);
   const taskFamily = calculateTaskFamilyConfidence(ranking);
   const uncertain = Boolean(humanReviewReason);
-  const mostInfluentialAxis = influentialAxis(weights);
+  const mostInfluentialAxis = influentialAxis(weights, ranking);
+  const strongestAlternative = strongestCompetingTaskCandidate(ranking);
   return {
     ...source,
     ranking,
@@ -377,9 +455,9 @@ export function reweightRankingResult(
     humanReviewReason,
     decisionConfidence: taskFamily.confidence,
     decisionMargin: taskFamily.margin,
-    clarificationQuestion: uncertain &&
+    clarificationQuestion: uncertain && strongestAlternative &&
       !["none_above", "insufficient_context"].includes(humanReviewReason?.code ?? "")
-      ? generateClarificationQuestion(ranking[0], ranking[1])
+      ? generateClarificationQuestion(ranking[0], strongestAlternative)
       : undefined,
     explanation: createExplanation(
       ranking,
