@@ -11,6 +11,7 @@ import { z } from "zod";
 import { conversationLogSchema } from "@/lib/conversations/schema";
 import { createConfiguredEmbeddingProvider } from "@/lib/embeddings/config";
 import { consolidateSemanticDuplicates } from "@/lib/embeddings/deduplicate";
+import { EmbeddingRequestError } from "@/lib/embeddings/openai-compatible";
 import type { PreparableEmbeddingProvider } from "@/lib/embeddings/types";
 import { deviceIdFromRequest } from "@/lib/persistence/device";
 import { createSQLiteRepository } from "@/lib/persistence/sqlite";
@@ -326,10 +327,12 @@ export async function POST(request: Request) {
       previousInput,
       embeddings,
     );
-  } catch {
+  } catch (error) {
     return errorResponse(502, {
       code: "embedding_failure",
-      message: "Semantic embeddings could not be generated with the configured model.",
+      message: error instanceof EmbeddingRequestError
+        ? `Semantic embeddings could not be generated with the configured model: ${error.message}`
+        : "Semantic embeddings could not be generated with the configured model.",
     });
   }
   if (canPersist && deviceId) {

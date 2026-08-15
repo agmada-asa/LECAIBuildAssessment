@@ -889,6 +889,28 @@ describe("POST /api/rank", () => {
     expect(body.error.message).toMatch(/corrective retry/i);
   });
 
+  it("returns safe embedding diagnostics when configuration is incomplete", async () => {
+    const previousIntegration = process.env.EMBEDDING_INTEGRATION;
+    process.env.EMBEDDING_INTEGRATION = "true";
+    try {
+      const response = await POST(request({ provider: "demo", conversation }));
+      const body = await response.json();
+
+      expect(response.status).toBe(502);
+      expect(body.error.code).toBe("embedding_failure");
+      expect(body.error.message).toContain(
+        "OpenAI-compatible embedding configuration is incomplete",
+      );
+      expect(body.error.message).not.toContain("secret");
+    } finally {
+      if (previousIntegration === undefined) {
+        delete process.env.EMBEDDING_INTEGRATION;
+      } else {
+        process.env.EMBEDDING_INTEGRATION = previousIntegration;
+      }
+    }
+  });
+
   it("corrects a schema-valid provider response rejected by normalization", async () => {
     getProviderStatuses.mockResolvedValue([
       { id: "codex", name: "Codex CLI", available: true },
