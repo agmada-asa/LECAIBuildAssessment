@@ -35,6 +35,23 @@ export type OpenAICompatibleEmbeddingOptions = {
 
 type Chunk = EmbeddingChunkProvenance & { text: string };
 
+/** Non-sensitive failure that callers may safely show to the user. */
+export class EmbeddingRequestError extends Error {
+  constructor(
+    message: string,
+    readonly code:
+      | "configuration"
+      | "unreachable"
+      | "http"
+      | "invalid_response"
+      | "dimension_mismatch",
+    readonly status?: number,
+  ) {
+    super(message);
+    this.name = "EmbeddingRequestError";
+  }
+}
+
 const responseSchema = z.object({
   data: z.array(
     z.object({
@@ -209,14 +226,21 @@ export class OpenAICompatibleEmbeddingProvider
             await this.waitBeforeRetry(attempt);
             continue;
           }
-          throw new Error(`The embedding endpoint returned HTTP ${response.status}.`);
+          throw new EmbeddingRequestError(
+            `The embedding endpoint returned HTTP ${response.status}.`,
+            "http",
+            response.status,
+          );
         }
 
         let body: unknown;
         try {
           body = await response.json();
         } catch {
-          throw new Error("The embedding endpoint returned an invalid response.");
+          throw new EmbeddingRequestError(
+            "The embedding endpoint returned an invalid JSON response.",
+            "invalid_response",
+          );
         }
         const parsed = responseSchema.safeParse(body);
         const ordered = parsed.success
@@ -227,12 +251,16 @@ export class OpenAICompatibleEmbeddingProvider
           ordered.length !== inputs.length ||
           ordered.some((item, index) => item.index !== index)
         ) {
-          throw new Error("The embedding endpoint returned an invalid response.");
+          throw new EmbeddingRequestError(
+            "The embedding endpoint returned an invalid response.",
+            "invalid_response",
+          );
         }
         ordered.forEach((item) => {
           if (item.embedding.length !== this.model.dimensions) {
-            throw new Error(
+            throw new EmbeddingRequestError(
               `The embedding endpoint returned dimension ${item.embedding.length}; expected ${this.model.dimensions}.`,
+              "dimension_mismatch",
             );
           }
         });
@@ -247,16 +275,22 @@ export class OpenAICompatibleEmbeddingProvider
           continue;
         }
         this.metrics.failures += 1;
-        if (error instanceof Error && error.message.startsWith("The embedding")) {
+        if (error instanceof EmbeddingRequestError) {
           throw error;
         }
-        throw new Error("The embedding endpoint could not be reached.");
+        throw new EmbeddingRequestError(
+          "The embedding endpoint could not be reached.",
+          "unreachable",
+        );
       } finally {
         clearTimeout(timeout);
         this.metrics.totalLatencyMs += Date.now() - started;
       }
     }
-    throw new Error("The embedding endpoint could not be reached.");
+    throw new EmbeddingRequestError(
+      "The embedding endpoint could not be reached.",
+      "unreachable",
+    );
   }
 
   /** Applies bounded exponential backoff without inspecting response bodies. */

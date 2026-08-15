@@ -2,10 +2,12 @@
 
 import { describe, expect, it } from "vitest";
 
+import { EmbeddingRequestError } from "./openai-compatible";
 import { createConfiguredEmbeddingProvider } from "./config";
 
 describe("embedding runtime configuration", () => {
   it("fails clearly when the API embedding configuration is absent", () => {
+    expect(() => createConfiguredEmbeddingProvider({})).toThrow(EmbeddingRequestError);
     expect(() => createConfiguredEmbeddingProvider({})).toThrow("incomplete");
   });
 
