@@ -210,8 +210,9 @@ earlier positive outcome while retaining that record for audit.
 Before ranking, the provider classifies the conversation as an actionable task,
 ordinary conversation, or insufficient context. Interpretations are typed as a
 task, conversation, or insufficient-context reading. An actionable-task
-assessment requires at least three distinct task interpretations; the other
-assessments require a compatible reading. The deterministic scorer marks
+assessment may contain one grounded task when the source supports one clear
+decision, and multiple task interpretations only when the source supports
+genuine alternatives. The other assessments require a compatible reading. The deterministic scorer marks
 incompatible candidate types invalid before ordering and relative confidence.
 Legacy persisted inputs without this assessment retain the previous open ranking
 behavior.
@@ -279,12 +280,14 @@ Weight changes affect ranking influence, not the underlying evidence. Conflict b
 
 `ProviderAnalysis` is intentionally narrow:
 
-- Three to five mutually exclusive interpretations.
+- One grounded interpretation, or two to five mutually exclusive
+  interpretations when the source supports distinct decisions.
 - One conversation-level actionability/recoverability assessment with grounded
   source-message IDs, known facts, and material unknowns.
 - A candidate kind (`task`, `conversation`, or `insufficient-context`) on every
-  interpretation. Actionable assessments must return three to five task
-  interpretations; other assessments must include a compatible reading.
+  interpretation. Actionable assessments may return one clear task or multiple
+  source-grounded alternatives; other assessments must include a compatible
+  reading.
 - Semantic terms for each interpretation.
 - Canonical candidate features.
 - Extracted constraints grounded in conversation phrases.
@@ -296,9 +299,9 @@ future adapter from silently replacing the application's scoring policy.
 Provider output is normalized before ranking. Candidate IDs are derived from
 titles, feature tags must use `dimension:value`, constraints must match a source
 message and a candidate feature dimension, and substantially overlapping candidates
-are merged. Actionable-task assessments are rejected when fewer than three
-distinct task results remain; ordinary-conversation and insufficient-context
-assessments may proceed with one grounded compatible reading. Message order and
+are merged. Assessed logs may proceed with one grounded compatible result;
+legacy provider snapshots without an actionability assessment retain the older
+three-candidate catalogue requirement. Message order and
 source IDs carry provenance. Explicit assistant/system/tool authors are not
 scored as new instructions; role-less logs intentionally retain all messages.
 Constraint display uses the exact matched source phrase; provider-written labels
@@ -319,8 +322,13 @@ Zod validates it before it crosses the provider boundary. Raw provider errors
 remain server-side and are represented by structured, redacted HTTP errors.
 Configured and operational status are separate. Discovery performs bounded
 readiness probes before selection, each run has a timeout, and one transient
-failure is retried. Deterministic candidate generation is test-only and is not
-accepted by the production route.
+failure is retried. Malformed JSON or schema output also receives one fresh,
+schema-constrained repair attempt. The browser stops awaiting one interactive
+analysis after 90 seconds; durable queued work remains available for bounded
+background recovery. A failed replacement import clears the earlier visible
+ranking, while a failed follow-up may retain the last successful result only as
+explicitly stale, non-actionable context. Deterministic candidate generation is
+test-only and is not accepted by the production route.
 
 ## Explanation boundary
 

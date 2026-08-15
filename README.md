@@ -2,8 +2,9 @@
 
 Resolve turns an arbitrary conversational log into a ranked, auditable task
 decision. Import JSON, CSV, or TXT; either Codex CLI or an OpenAI-compatible
-analysis API proposes three to five genuinely competing task interpretations,
-or one grounded reading when the log is ordinary conversation or lacks context. A
+analysis API proposes one grounded task when the request is clear, or multiple
+interpretations when the source supports genuinely competing decisions. Ordinary
+conversation and missing-context logs receive one grounded reading. A
 separately configured OpenAI-compatible embedding API then supplies the semantic
 vectors used to score those interpretations alongside explicit constraints and
 accepted user/domain history. Weak or closely matched evidence is sent to human
@@ -14,6 +15,7 @@ feature-hash provider exists only for fast, reproducible automated tests.
 
 ## What works
 
+- Direct conversation initiation from the UI with initial message, custom name, and domain metadata.
 - Canonical, Zod-validated conversations with ordered source IDs and optional
   author/role, domain, and accepted outcomes.
 - Paste, file picker, and drag/drop imports with validation and preview.
@@ -41,7 +43,7 @@ JSON / CSV / TXT
   -> parse and validate ConversationLog
   -> persist owner-scoped conversation revision
   -> Codex CLI or analysis API assesses actionability and context recoverability
-  -> selected analysis provider generates 3-5 task candidates, or one grounded abstention/conversation reading
+  -> selected analysis provider generates one clear task or source-grounded competing decisions/readings
   -> normalize IDs, features, boundaries, duplicates, and source references
   -> embedding API embeds messages, candidates, and history with one pinned model
   -> score semantic + constraints + history independently
@@ -76,8 +78,9 @@ Edit `.env.local` before starting the app. The API base URL, key, and embedding
 settings are always required. `OPENAI_COMPATIBLE_ANALYSIS_MODEL` is required only
 when the OpenAI-compatible API—not Codex CLI—will generate candidates.
 
-Open http://localhost:3000, choose **Analyze a log**, select an operational
-provider, preview the log, and start analysis.
+Open http://localhost:3000, choose **Start a conversation** to begin from
+scratch or **Analyze a log** to import an existing log file, select an
+operational provider, and start analysis.
 
 Production:
 
@@ -166,10 +169,13 @@ environment variable:
 Provider discovery reports `configured` separately from `operational`. Codex is
 checked with a bounded version command; API readiness lists models with a
 three-second timeout. A configured provider that fails its probe cannot be
-selected. Failed analysis visibly leaves the previous result stale and disables
-accept/correct actions. A successful direct analysis commits the exact queued
-revision in the same request, so the queue does not require a duplicate provider
-call to leave `pending`.
+selected. A failed follow-up visibly leaves the last successful result stale and
+disables accept/correct actions. A failed replacement import removes the prior
+ranking so it cannot be mistaken for the new result. The interactive request
+stops waiting after 90 seconds and offers a retry while durable queued work
+remains independently recoverable. A successful direct analysis commits the
+exact queued revision in the same request, so the queue does not require a
+duplicate provider call to leave `pending`.
 Loading the task sidebar also repairs legacy pending entries when an exact
 owner/provider/conversation/message/weight match already exists in persisted
 ranking history. Unmatched pending work is submitted to the bounded queue
@@ -186,7 +192,9 @@ the selected analysis model; it cannot guarantee capacity for the next
 generation request. Runtime failures
 therefore distinguish rejected credentials, denied or missing models, rate or
 capacity limits, upstream 5xx responses, and invalid structured output without
-showing provider response bodies or credentials. For direct OpenAI API use, set
+showing provider response bodies or credentials. Malformed JSON or schema
+output receives one fresh, schema-constrained repair attempt before the app
+returns an error. For direct OpenAI API use, set
 the base URL to `https://api.openai.com/v1`, use an OpenAI API key, select an
 embedding model available to that project, and—when using API candidate
 analysis—select a model that supports Chat Completions structured outputs.
@@ -223,6 +231,12 @@ decision confidence while preserving genuinely competing decisions.
 Human review is required below
 `0.52` total evidence, below `0.55` task-family confidence, within a `0.12`
 top-family margin, or when no valid/current candidate represents the task.
+Low relative confidence and a close family margin do not force review when the
+winner has at least `0.65` total evidence, `0.90` constraint consistency, two
+distinct supporting constraint matches, a `0.10` weighted-score lead, and no
+constraint conflict. This keeps
+provider-generated task labels from overruling several exact source
+instructions while retaining the minimum-evidence gate.
 These policy values preserve all labelled ambiguity/weak-evidence escalations;
 they are not statistical calibration.
 
