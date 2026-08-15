@@ -2,9 +2,14 @@
 
 Resolve turns an arbitrary conversational log into a ranked, auditable task
 decision. Import JSON, CSV, or TXT; either Codex CLI or an OpenAI-compatible
-analysis API proposes one grounded task when the request is clear, or multiple
-interpretations when the source supports genuinely competing decisions. Ordinary
-conversation and missing-context logs receive one grounded reading. A
+analysis API proposes source-grounded task readings, including stale,
+contradicted, or underspecified alternatives when a clear leading reading would
+otherwise collapse the candidate set. Ordinary conversation and missing-context
+logs also preserve compatible source-grounded readings so missing referents and
+known facts remain visible without inventing agent work. If an actionable task
+still has fewer than three distinct readings after one corrective provider
+retry, Resolve keeps the grounded readings and explicitly requires human review
+instead of padding the catalogue. A
 separately configured OpenAI-compatible embedding API then supplies the semantic
 vectors used to score those interpretations alongside explicit constraints and
 accepted user/domain history. Weak or closely matched evidence is sent to human
@@ -28,6 +33,9 @@ feature-hash provider exists only for fast, reproducible automated tests.
   follow-up questions, and quoted/assistant text handling.
 - Complete scores, relative confidence, rank/axis deltas, supporting/conflicting
   evidence, previous/current winners, and review reasons.
+- One corrective retry for actionable catalogues with fewer than three distinct
+  readings, followed by an explicit shortfall warning when the provider still
+  cannot ground three genuine alternatives.
 - Owner-scoped SQLite conversations, queued revisions, ranking runs, accepted or
   corrected outcomes, restart recovery, and user/domain-filtered retrieval.
 - A collapsible task sidebar that polls waiting and analyzing work, starts a
@@ -43,9 +51,10 @@ JSON / CSV / TXT
   -> parse and validate ConversationLog
   -> persist owner-scoped conversation revision
   -> Codex CLI or analysis API assesses actionability and context recoverability
-  -> selected analysis provider generates one clear task or source-grounded competing decisions/readings
+  -> selected analysis provider generates source-grounded competing decisions/readings
   -> normalize IDs, features, boundaries, duplicates, and source references
   -> embedding API embeds messages, candidates, and history with one pinned model
+  -> retry one short actionable catalogue; preserve and flag any remaining shortfall
   -> score semantic + constraints + history independently
   -> gate incompatible candidate kinds, calculate confidence, apply review policy
   -> persist RankingResult and show evidence, deltas, and clarification
@@ -67,7 +76,7 @@ Requirements:
   you select; the application has no production local embedding fallback.
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/agmada-asa/LECAIBuildAssessment.git
 cd LECAIBuildAssessment
 corepack enable
 pnpm install --frozen-lockfile
@@ -227,6 +236,10 @@ decision confidence while preserving genuinely competing decisions.
 Human review is required below
 `0.52` total evidence, below `0.55` task-family confidence, within a `0.12`
 top-family margin, or when no valid/current candidate represents the task.
+It is also mandatory when fewer than three genuinely distinct actionable-task
+interpretations remain after the bounded corrective retry. The valid candidates
+are still ranked and displayed; the UI reports the exact generated count rather
+than manufacturing additional readings.
 Low relative confidence and a close family margin do not force review when the
 winner has at least `0.65` total evidence, `0.90` constraint consistency, two
 distinct supporting constraint matches, a `0.10` weighted-score lead, and no

@@ -64,7 +64,7 @@ const validAnalysis = {
 };
 
 describe("normalizeProviderAnalysis", () => {
-  it("accepts one grounded insufficient-context reading for human review", () => {
+  it("preserves one grounded insufficient-context reading without padding", () => {
     const sparseLog: ConversationLog = {
       conversationId: "missing-referent",
       userId: "u1",
@@ -104,8 +104,73 @@ describe("normalizeProviderAnalysis", () => {
       sparseLog,
     );
 
-    expect(result.interpretations).toHaveLength(1);
-    expect(result.interpretations[0].kind).toBe("insufficient-context");
+    expect(result.interpretations).toEqual([
+      expect.objectContaining({
+        kind: "insufficient-context",
+        title: "Insufficient context",
+      }),
+    ]);
+  });
+
+  it("does not turn missing facts into synthetic missing-context readings", () => {
+    const planChangeLog: ConversationLog = {
+      conversationId: "import-18wpikb",
+      userId: "imported-user",
+      messages: [
+        { id: "M1", text: "x: So we're not doing it there anymore?", timestamp: "2026-08-15T12:00:00.000Z" },
+        { id: "M2", text: "y: Apparently not.", timestamp: "2026-08-15T12:01:00.000Z" },
+        { id: "M3", text: "x: Because of what happened Tuesday?", timestamp: "2026-08-15T12:02:00.000Z" },
+        { id: "M4", text: "y: That's what I heard.", timestamp: "2026-08-15T12:03:00.000Z" },
+        { id: "M5", text: "x: Does Sam know?", timestamp: "2026-08-15T12:04:00.000Z" },
+        { id: "M6", text: "y: I assumed you told him.", timestamp: "2026-08-15T12:05:00.000Z" },
+        { id: "M7", text: "x: I haven't spoken to him since then.", timestamp: "2026-08-15T12:06:00.000Z" },
+      ],
+      acceptedOutcomes: [],
+    };
+
+    const input = normalizeProviderAnalysis(
+      {
+        conversationAssessment: {
+          kind: "insufficient-context",
+          summary:
+            "The speakers discuss an apparent change of plans, a Tuesday event, and whether Sam knows, but key referents are missing.",
+          evidenceMessageIds: ["M1", "M3", "M5", "M7"],
+          knownFacts: [
+            "The speakers believe a plan changed.",
+            "The change may relate to something that happened Tuesday.",
+            "Sam may not know about the change.",
+          ],
+          unknowns: [
+            "What activity 'it' refers to.",
+            "What location 'there' refers to.",
+            "What happened Tuesday.",
+            "Whether anyone needs to inform Sam or take another action.",
+          ],
+        },
+        interpretations: [
+          {
+            id: "unidentified-plan-change",
+            kind: "insufficient-context",
+            title: "Discussion of an unidentified plan change",
+            summary:
+              "The activity, location, Tuesday event, and possible action for Sam cannot be recovered.",
+            semanticTerms: ["plan change", "Tuesday", "Sam"],
+            features: ["actionability:insufficient-context", "topic:unknown"],
+          },
+        ],
+        constraints: [],
+        taskBoundaries: [],
+        notes: "Provider returned one missing-context reading.",
+      },
+      planChangeLog,
+    );
+
+    expect(input.interpretations).toEqual([
+      expect.objectContaining({
+        kind: "insufficient-context",
+        title: "Discussion of an unidentified plan change",
+      }),
+    ]);
   });
 
   it("does not accept a conversational acknowledgement as a task boundary", () => {
@@ -448,7 +513,7 @@ describe("normalizeProviderAnalysis", () => {
     ).toThrow(/every interpretation.*task/i);
   });
 
-  it("accepts one grounded task when the source supports one clear decision", () => {
+  it("preserves one actionable provider reading without inventing rivals", () => {
     const result = normalizeProviderAnalysis(
       {
         conversationAssessment: {
@@ -468,10 +533,94 @@ describe("normalizeProviderAnalysis", () => {
       log,
     );
 
-    expect(result.interpretations).toHaveLength(1);
-    expect(result.interpretations[0]).toMatchObject({
-      kind: "task",
-      title: "CSV export",
+    expect(result.interpretations).toEqual([
+      expect.objectContaining({ kind: "task", title: "CSV export" }),
+    ]);
+  });
+
+  it("leaves a collapsed provider catalogue incomplete instead of padding it", () => {
+    const correctionLog: ConversationLog = {
+      conversationId: "slides-to-prototype",
+      userId: "u1",
+      messages: [
+        {
+          id: "M1",
+          text: "Create a set of slides for presentation on Monday.",
+          timestamp: "2026-08-15T10:57:52.731Z",
+        },
+        {
+          id: "M2",
+          text: "No, we don't need slides we need a prototype.",
+          timestamp: "2026-08-15T10:58:40.111Z",
+        },
+      ],
+      acceptedOutcomes: [],
+    };
+
+    const input = normalizeProviderAnalysis(
+      {
+        conversationAssessment: {
+          kind: "actionable-task",
+          summary: "The user reframes a slide request into a prototype request.",
+          evidenceMessageIds: ["M1", "M2"],
+          knownFacts: [
+            "The first message requested slides for a Monday presentation.",
+            "The second message says slides are not needed and asks for a prototype.",
+          ],
+          unknowns: ["The subject or fidelity of the prototype is not stated."],
+        },
+        interpretations: [
+          {
+            id: "prototype",
+            kind: "task",
+            title: "Prototype requested for an unspecified subject",
+            summary:
+              "Create a prototype instead of slides, but the prototype subject is not recoverable from the supplied messages.",
+            semanticTerms: ["prototype", "not slides", "unspecified subject"],
+            features: ["format:prototype", "topic:unknown"],
+          },
+        ],
+        constraints: [
+          {
+            id: "slides-required",
+            phrases: ["slides"],
+            dimension: "format",
+            value: "slides",
+            mode: "require",
+            strength: 1,
+            label: "Create slides",
+          },
+          {
+            id: "slides-forbidden",
+            phrases: ["don't need slides"],
+            dimension: "format",
+            value: "slides",
+            mode: "forbid",
+            strength: 1,
+            label: "Do not need slides",
+          },
+          {
+            id: "prototype-required",
+            phrases: ["need a prototype"],
+            dimension: "format",
+            value: "prototype",
+            mode: "require",
+            strength: 1,
+            label: "Need a prototype",
+          },
+        ],
+        taskBoundaries: [],
+        notes: "Provider collapsed the catalogue to one best reading.",
+      },
+      correctionLog,
+    );
+    const ranked = rankConversation(input, correctionLog.messages, DEFAULT_WEIGHTS);
+
+    expect(input.interpretations).toHaveLength(1);
+    expect(ranked.ranking).toHaveLength(1);
+    expect(ranked.ranking[0].title).toMatch(/prototype/i);
+    expect(ranked.humanReviewReason).toMatchObject({
+      code: "insufficient_interpretations",
     });
   });
 

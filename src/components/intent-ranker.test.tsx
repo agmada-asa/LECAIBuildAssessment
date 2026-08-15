@@ -81,6 +81,43 @@ describe("IntentRanker", () => {
     expect(correctButton).toHaveClass("w-full");
   });
 
+  it("reports when fewer than three task interpretations could be generated", () => {
+    const scenario = getScenario("finance-reframe");
+    const result = rankConversation(
+      {
+        ...scenario,
+        interpretations: [scenario.interpretations[0]],
+        conversationAssessment: {
+          kind: "actionable-task",
+          summary: "The conversation contains one grounded task reading.",
+          evidenceMessageIds: [scenario.messages[0].id],
+          knownFacts: [],
+          unknowns: [],
+        },
+      },
+      scenario.messages,
+      DEFAULT_WEIGHTS,
+    );
+
+    render(
+      <EvidencePanel
+        result={result}
+        selected={result.ranking[0]}
+        canSaveOutcome={false}
+        canAcceptOutcome
+        outcomeStatus=""
+        onOutcome={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Fewer than 3 interpretations")).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("alert")).getByText(
+        /only 1 distinct interpretation.*at least 3/i,
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("offers correction without accepting a non-task reading as task history", () => {
     const scenario = getScenario("finance-reframe");
     const result = rankConversation(scenario, scenario.messages, DEFAULT_WEIGHTS);

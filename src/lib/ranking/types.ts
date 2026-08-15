@@ -205,6 +205,7 @@ export type HumanReviewReasonCode =
   | "low_relative_confidence"
   | "close_candidates"
   | "insufficient_context"
+  | "insufficient_interpretations"
   | "stale_candidates";
 
 /** Stable policy code plus user-facing explanation for automated routing. */

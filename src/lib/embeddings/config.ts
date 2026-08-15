@@ -1,6 +1,9 @@
 /** @file Server-only configuration for API-backed embedding models. */
 
-import { OpenAICompatibleEmbeddingProvider } from "./openai-compatible";
+import {
+  EmbeddingRequestError,
+  OpenAICompatibleEmbeddingProvider,
+} from "./openai-compatible";
 import { embeddingProvider } from "./provider";
 import type { EmbeddingProvider } from "./types";
 
@@ -43,7 +46,10 @@ export function createConfiguredEmbeddingProvider(
     !Number.isInteger(maxInputTokens) ||
     maxInputTokens < 1
   ) {
-    throw new Error("OpenAI-compatible embedding configuration is incomplete.");
+    throw new EmbeddingRequestError(
+      "OpenAI-compatible embedding configuration is incomplete.",
+      "configuration",
+    );
   }
   return new OpenAICompatibleEmbeddingProvider({
     baseUrl,

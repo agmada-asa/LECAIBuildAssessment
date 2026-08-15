@@ -333,6 +333,21 @@ export function rankConversation(
       };
     }
   }
+  // A short actionable catalogue is always surfaced even when another review
+  // rule also applies, because the user must know the requested comparison set
+  // could not be completed after the provider's corrective retry.
+  if (
+    input.conversationAssessment?.kind === "actionable-task" &&
+    current.ranking.length < 3
+  ) {
+    const generated = current.ranking.length;
+    humanReviewReason = {
+      code: "insufficient_interpretations",
+      message:
+        `Only ${generated} distinct interpretation${generated === 1 ? "" : "s"} could be generated. ` +
+        "At least 3 are required, so human review is required.",
+    };
+  }
   const uncertaintyReason = humanReviewReason?.message;
   const uncertain = Boolean(humanReviewReason);
   const strongestAlternative = strongestCompetingTaskCandidate(current.ranking);
@@ -477,7 +492,9 @@ export function reweightRankingResult(
     item.explanation = candidateExplanation(item);
   });
   const humanReviewReason =
-    source.humanReviewReason?.code === "stale_candidates"
+    ["stale_candidates", "insufficient_interpretations"].includes(
+      source.humanReviewReason?.code ?? "",
+    )
       ? source.humanReviewReason
       : evaluateHumanReview(ranking);
   const taskFamily = calculateTaskFamilyConfidence(ranking);
