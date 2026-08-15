@@ -6,6 +6,17 @@ test.setTimeout(180_000);
 
 /** Keeps browser regressions deterministic while route tests cover live adapters. */
 async function installTestRankingBackend(page: Page) {
+  await page.route("**/api/queue", async (route) => {
+    if (route.request().method() === "POST") {
+      await route.fulfill({
+        status: 202,
+        contentType: "application/json",
+        body: JSON.stringify({}),
+      });
+      return;
+    }
+    await route.continue();
+  });
   await page.route("**/api/rank", async (route) => {
     const request = route.request();
     const body = request.postDataJSON() as Record<string, unknown>;

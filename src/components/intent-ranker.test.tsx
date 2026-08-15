@@ -16,11 +16,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IntentRanker } from "./intent-ranker";
 import { EvidencePanel } from "./intent-ranker/evidence-panel";
 import { ConversationPanel } from "./intent-ranker/conversation-panel";
+import { RankingPanel } from "./intent-ranker/ranking-panel";
 import { rankConversation } from "@/lib/ranking/engine";
-import {
-  DEFAULT_WEIGHTS,
-  getScenario,
-} from "@/lib/ranking/scenarios";
+import { DEFAULT_WEIGHTS } from "@/lib/ranking/policy";
+import { getScenario } from "@/lib/ranking/test-scenarios";
 
 const operationalApiProviders = [{
   id: "api",
@@ -47,7 +46,7 @@ describe("IntentRanker", () => {
     vi.useRealTimers();
   });
 
-  it("opens on arbitrary-log analysis without fixture rankings or scenario controls", () => {
+  it("opens on arbitrary-log analysis without preloaded rankings or sample controls", () => {
     render(<IntentRanker />);
 
     expect(screen.getByRole("heading", { name: "Rank an ambiguous conversation" })).toBeInTheDocument();
@@ -65,6 +64,7 @@ describe("IntentRanker", () => {
         result={result}
         selected={result.ranking[0]}
         canSaveOutcome
+        canAcceptOutcome
         outcomeStatus=""
         onOutcome={vi.fn()}
       />,
@@ -80,6 +80,24 @@ describe("IntentRanker", () => {
     expect(correctButton).toHaveClass("w-full");
   });
 
+  it("offers correction without accepting a non-task reading as task history", () => {
+    const scenario = getScenario("finance-reframe");
+    const result = rankConversation(scenario, scenario.messages, DEFAULT_WEIGHTS);
+    render(
+      <EvidencePanel
+        result={result}
+        selected={{ ...result.ranking[0], kind: "conversation" }}
+        canSaveOutcome
+        canAcceptOutcome={false}
+        outcomeStatus=""
+        onOutcome={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Accept interpretation" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Correct interpretation" })).toBeInTheDocument();
+  });
+
   it("renders legacy results that do not include a conversation assessment", () => {
     const scenario = getScenario("finance-reframe");
     const result = rankConversation(scenario, scenario.messages, DEFAULT_WEIGHTS);
@@ -93,6 +111,7 @@ describe("IntentRanker", () => {
         result={legacyResult}
         selected={legacyResult.ranking[0]}
         canSaveOutcome={false}
+        canAcceptOutcome
         outcomeStatus=""
         onOutcome={vi.fn()}
       />,
@@ -102,18 +121,46 @@ describe("IntentRanker", () => {
     expect(screen.queryByText("Conversation assessment")).not.toBeInTheDocument();
   });
 
+  it("shows a ranking-shift banner when the winner is newly introduced", () => {
+    const scenario = getScenario("finance-reframe");
+    const previousInput = {
+      ...scenario,
+      interpretations: scenario.interpretations.filter(
+        (candidate) => candidate.id !== "csv-export",
+      ),
+    };
+    const result = rankConversation(
+      scenario,
+      scenario.messages,
+      DEFAULT_WEIGHTS,
+      previousInput,
+    );
+
+    expect(result.ranking[0].id).toBe("csv-export");
+    expect(result.ranking[0].previousRank).toBeUndefined();
+    expect(result.rankingChange?.winnerChanged).toBe(true);
+    render(
+      <RankingPanel
+        result={result}
+        selectedId={result.ranking[0].id}
+        onSelect={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent("Ranking shifted");
+    expect(screen.getByRole("status")).toHaveTextContent("newly introduced");
+  });
+
   it("labels a generated TXT timestamp as unavailable", () => {
     render(
       <ConversationPanel
         messages={[{ id: "M1", text: "Imported TXT line", timestamp: "2000-01-01T00:00:00.000Z" }]}
-        totalFixtureMessages={1}
         userName="imported-user"
         userRole="Domain not supplied"
         isProcessing={false}
         customMessage=""
         onCustomMessageChange={vi.fn()}
         onAddCustomMessage={vi.fn()}
-        onProcessNext={vi.fn()}
         onReset={vi.fn()}
       />,
     );
@@ -132,6 +179,7 @@ describe("IntentRanker", () => {
         result={result}
         selected={result.ranking[0]}
         canSaveOutcome
+        canAcceptOutcome
         outcomeStatus=""
         onOutcome={onOutcome}
       />,
@@ -257,7 +305,7 @@ describe("IntentRanker", () => {
                   id: "task-2",
                   externalConversationId: "apology-email",
                   revision: 1,
-                  state: "pending",
+                  state: "processing",
                   attempts: 0,
                   request: { conversation: { messages: [{}] } },
                   createdAt: "2026-08-14T09:02:00.000Z",
@@ -518,7 +566,7 @@ describe("IntentRanker", () => {
       "M2",
       "M3",
     ]);
-    expect(requestBody.previousInput.interpretations).toEqual(scenario.interpretations);
+    expect(requestBody).not.toHaveProperty("previousInput");
   });
 
   it("recalculates an imported ranking immediately when weights change", async () => {

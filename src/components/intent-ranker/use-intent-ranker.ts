@@ -5,7 +5,7 @@
  * local deterministic reweighting. Presentation components remain stateless.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { ConversationLog } from "@/lib/conversations/schema";
 import type { ProviderId, ProviderStatus } from "@/lib/providers/types";
@@ -13,23 +13,16 @@ import type { RankSuccessResponse } from "@/lib/ranking/api";
 import type { RankingResult } from "@/lib/ranking/types";
 import { DEVICE_ID_HEADER, getOrCreateDeviceId } from "@/lib/persistence/device";
 import type { QueuedRankingTask, QueuedTaskReference } from "@/lib/persistence/types";
-import { rankConversation, reweightRankingResult } from "@/lib/ranking/engine";
-import {
-  DEFAULT_WEIGHTS,
-  getScenario,
-  SCENARIOS,
-  WEIGHT_PRESETS,
-} from "@/lib/ranking/scenarios";
+import { reweightRankingResult } from "@/lib/ranking/engine";
+import { DEFAULT_WEIGHTS, WEIGHT_PRESETS } from "@/lib/ranking/policy";
 import type {
   ConversationMessage,
-  RankingInput,
   SignalKey,
   SignalWeights,
 } from "@/lib/ranking/types";
 import {
   nextMessageId,
   requestRanking,
-  scenarioConversationLog,
 } from "./model";
 
 type ActiveRequest = {
@@ -59,9 +52,6 @@ function restoredProvider(provider: ProviderId): RankSuccessResponse["provider"]
 
 /** Coordinates workbench state and rejects provider responses from obsolete views. */
 export function useIntentRanker() {
-  const [scenarioId, setScenarioId] = useState(SCENARIOS[0].id);
-  const [visibleMessageCount, setVisibleMessageCount] = useState(2);
-  const [customMessages, setCustomMessages] = useState<ConversationMessage[]>([]);
   const [customMessage, setCustomMessage] = useState("");
   const [weights, setWeights] = useState<SignalWeights>(DEFAULT_WEIGHTS);
   const [weightPreset, setWeightPreset] = useState("explicit");
@@ -70,8 +60,6 @@ export function useIntentRanker() {
   const [processingConversationId, setProcessingConversationId] = useState<string>();
   const [isImporting, setIsImporting] = useState(false);
   const [importedLog, setImportedLog] = useState<ConversationLog>();
-  const [remoteInput, setRemoteInput] = useState<RankingInput>();
-  const [remotePreviousInput, setRemotePreviousInput] = useState<RankingInput>();
   const [remoteResult, setRemoteResult] = useState<RankingResult>();
   const [persistence, setPersistence] =
     useState<RankSuccessResponse["persistence"]>();
@@ -90,27 +78,11 @@ export function useIntentRanker() {
   const activeRequest = useRef<ActiveRequest | undefined>(undefined);
   const [resultStale, setResultStale] = useState(false);
 
-  const scenario = getScenario(scenarioId);
-  const messages = useMemo(
-    () =>
-      importedLog
-        ? [...importedLog.messages, ...customMessages]
-        : [...scenario.messages.slice(0, visibleMessageCount), ...customMessages],
-    [importedLog, scenario, visibleMessageCount, customMessages],
-  );
-  const fixtureResult = useMemo(
-    () => rankConversation(scenario, messages, weights),
-    [scenario, messages, weights],
-  );
-  const result = useMemo(
-    () =>
-      remoteResult ?? (remoteInput
-        ? rankConversation(remoteInput, messages, weights, remotePreviousInput)
-        : fixtureResult),
-    [fixtureResult, messages, remoteInput, remotePreviousInput, remoteResult, weights],
-  );
-  const selected =
-    result.ranking.find((item) => item.id === selectedId) ?? result.ranking[0];
+  const messages = importedLog?.messages ?? [];
+  const result = remoteResult;
+  const selected = result
+    ? result.ranking.find((item) => item.id === selectedId) ?? result.ranking[0]
+    : undefined;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -127,7 +99,7 @@ export function useIntentRanker() {
         }
       })
       .catch(() => {
-        // Discovery is optional; the deterministic demo remains usable.
+        // Provider discovery failure is presented as an unavailable import path.
       });
     return () => controller.abort();
   }, []);
@@ -139,10 +111,9 @@ export function useIntentRanker() {
       signal: controller.signal,
     })
       .then(async (response) => response.ok ? response.json() : undefined)
-      .then((state: { run?: { conversation: ConversationLog; input: RankingInput; result: RankingResult; provider: ProviderId }; reference?: { id: string; state: RankSuccessResponse["persistence"]["state"] } } | undefined) => {
+      .then((state: { run?: { conversation: ConversationLog; result: RankingResult; provider: ProviderId }; reference?: { id: string; state: RankSuccessResponse["persistence"]["state"] } } | undefined) => {
         if (!state?.run || !state.reference || state.run.provider === "demo") return;
         setImportedLog(state.run.conversation);
-        setRemoteInput(state.run.input);
         setRemoteResult(state.run.result);
         setSelectedProvider(state.run.provider);
         setAnalysisSource(restoredProvider(state.run.provider));
@@ -161,7 +132,7 @@ export function useIntentRanker() {
     [],
   );
 
-  /** Invalidates provider and fixture work before the visible conversation changes. */
+  /** Invalidates provider work before the visible conversation changes. */
   function invalidatePendingWork() {
     requestSequence.current += 1;
     activeRequest.current?.controller.abort();
@@ -221,75 +192,21 @@ export function useIntentRanker() {
     }
   }
 
-  /** Resets transient state when the walkthrough moves to another fixture. */
-  function handleScenarioChange(value: string) {
-    invalidatePendingWork();
-    setScenarioId(value);
-    setVisibleMessageCount(2);
-    setCustomMessages([]);
-    setCustomMessage("");
-    setSelectedId("");
-    setImportedLog(undefined);
-    setRemoteInput(undefined);
-    setRemotePreviousInput(undefined);
-    setRemoteResult(undefined);
-    setPersistence(undefined);
-    setAnalysisSource(undefined);
-    setAnalysisError("");
-    setRenameError("");
-    setConversationRename(undefined);
-    setOutcomeStatus("");
-    setAcceptedInterpretationId("");
-    setIsSavingOutcome(false);
-    setResultStale(false);
-  }
-
-  /** Advances a reproducible sample immediately and persists the same canonical snapshot. */
-  function handleProcessNext() {
-    if (visibleMessageCount >= scenario.messages.length || isProcessing) return;
-    const nextMessages = scenario.messages.slice(0, visibleMessageCount + 1);
-    setVisibleMessageCount((count) => count + 1);
-    setSelectedId("");
-    setRemoteInput(undefined);
-    setRemotePreviousInput(undefined);
-    setRemoteResult(undefined);
-    setAnalysisSource(undefined);
-    setAnalysisError("");
-    setRenameError("");
-    setConversationRename(undefined);
-    setOutcomeStatus("");
-    setAcceptedInterpretationId("");
-    setResultStale(false);
-    requestRanking(
-        scenarioConversationLog(scenario, nextMessages),
-        selectedProvider,
-        weights,
-        scenario,
-      ).catch(() => {
-        // Sample exploration remains deterministic when optional persistence is unavailable.
-      });
-  }
-
-  /** Appends a non-persistent message and reruns the complete provider pipeline. */
+  /** Appends a message and reruns the complete provider pipeline. */
   async function handleAddCustomMessage() {
     const text = customMessage.trim();
-    if (!text || isProcessing) return;
+    if (!text || isProcessing || !importedLog) return;
     const message: ConversationMessage = {
       id: nextMessageId(messages),
       text,
       timestamp: new Date().toISOString(),
     };
     const nextMessages = [...messages, message];
-    const log = importedLog
-      ? { ...importedLog, messages: nextMessages }
-      : scenarioConversationLog(scenario, nextMessages);
+    const log = { ...importedLog, messages: nextMessages };
     const previousImportedLog = importedLog;
-    const previousCustomMessages = customMessages;
-    const comparisonInput = remoteInput ?? (importedLog ? undefined : scenario);
     const request = beginProviderRequest(log.conversationId);
 
-    if (importedLog) setImportedLog(log);
-    else setCustomMessages((current) => [...current, message]);
+    setImportedLog(log);
     setSelectedId("");
     setCustomMessage("");
     setAnalysisError("");
@@ -303,21 +220,17 @@ export function useIntentRanker() {
         log,
         selectedProvider,
         weights,
-        comparisonInput,
         request.controller.signal,
         queuedTask,
       );
       if (!isCurrentRequest(request)) return;
-      setRemoteInput(response.input);
-      setRemotePreviousInput(comparisonInput);
       setRemoteResult(response.result);
       setPersistence(response.persistence);
       setAnalysisSource(response.provider);
       setQueueRefreshRevision((revision) => revision + 1);
     } catch (caught) {
       if (!isCurrentRequest(request)) return;
-      if (previousImportedLog) setImportedLog(previousImportedLog);
-      else setCustomMessages(previousCustomMessages);
+      setImportedLog(previousImportedLog);
       setCustomMessage(text);
       setAnalysisError(caught instanceof Error ? caught.message : "Analysis failed.");
       setResultStale(true);
@@ -327,16 +240,12 @@ export function useIntentRanker() {
     }
   }
 
-  /** Restores the selected scenario to its first two fixture messages. */
+  /** Clears the active imported conversation and archived visible ranking state. */
   function handleReset() {
     invalidatePendingWork();
-    setVisibleMessageCount(2);
-    setCustomMessages([]);
     setCustomMessage("");
     setSelectedId("");
     setImportedLog(undefined);
-    setRemoteInput(undefined);
-    setRemotePreviousInput(undefined);
     setRemoteResult(undefined);
     setPersistence(undefined);
     setAnalysisSource(undefined);
@@ -405,15 +314,11 @@ export function useIntentRanker() {
         log,
         provider,
         weights,
-        undefined,
         request.controller.signal,
         queuedTask,
       );
       if (!isCurrentRequest(request)) return;
       setImportedLog(log);
-      setCustomMessages([]);
-      setRemoteInput(response.input);
-      setRemotePreviousInput(undefined);
       setRemoteResult(response.result);
       setPersistence(response.persistence);
       setAnalysisSource(response.provider);
@@ -436,7 +341,7 @@ export function useIntentRanker() {
     decision: "accepted" | "corrected",
     correction?: string,
   ) {
-    if (!persistence?.rankingRunId || !persistence.identified || !importedLog) return;
+    if (!persistence?.rankingRunId || !persistence.identified || !importedLog || !selected) return;
     if (decision === "corrected" && !correction?.trim()) {
       setOutcomeStatus("Describe the actual intended task before saving a correction.");
       return;
@@ -450,17 +355,9 @@ export function useIntentRanker() {
         headers: { "content-type": "application/json", [DEVICE_ID_HEADER]: getOrCreateDeviceId() },
         body: JSON.stringify({
           rankingRunId: persistence.rankingRunId,
-          domainName: importedLog.domain?.name,
-          conversationUserId: importedLog.userId,
           decision,
           correction: correction?.trim(),
-          interpretation: {
-            id: interpretation.id,
-            title: interpretation.title,
-            summary: interpretation.summary,
-            semanticTerms: interpretation.semanticTerms,
-            features: interpretation.features,
-          },
+          interpretationId: interpretation.id,
         }),
       });
       const body = (await response.json()) as { error?: string };
@@ -526,13 +423,10 @@ export function useIntentRanker() {
     invalidatePendingWork();
     const restoredWeights = task.request.weights ?? DEFAULT_WEIGHTS;
     setImportedLog(task.request.conversation);
-    setCustomMessages([]);
     setCustomMessage("");
     setWeights(restoredWeights);
     setWeightPreset("custom");
     setSelectedId("");
-    setRemoteInput(task.result.input);
-    setRemotePreviousInput(task.request.previousInput);
     setRemoteResult(task.result.result);
     setPersistence({ ...task.result.persistence, state: task.state });
     setSelectedProvider(task.result.provider.id);
@@ -551,8 +445,6 @@ export function useIntentRanker() {
   }
 
   return {
-    scenarioId,
-    scenario,
     messages,
     result,
     selected,
@@ -579,8 +471,6 @@ export function useIntentRanker() {
     setCustomMessage,
     setSelectedId,
     setSelectedProvider,
-    handleScenarioChange,
-    handleProcessNext,
     handleAddCustomMessage,
     handleReset,
     handlePresetChange,

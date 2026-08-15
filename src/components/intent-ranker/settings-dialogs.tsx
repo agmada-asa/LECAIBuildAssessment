@@ -29,7 +29,7 @@ import {
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import type { ProviderId, ProviderStatus } from "@/lib/providers/types";
-import { WEIGHT_PRESETS } from "@/lib/ranking/scenarios";
+import { WEIGHT_PRESETS } from "@/lib/ranking/policy";
 import type { SignalKey, SignalWeights } from "@/lib/ranking/types";
 import { cn } from "@/lib/utils";
 import { SIGNAL_KEYS, SIGNAL_META } from "./model";

@@ -21,6 +21,9 @@ import { useIntentRanker } from "./intent-ranker/use-intent-ranker";
 /** Main arbitrary-conversation analysis workbench. */
 export function IntentRanker() {
   const workbench = useIntentRanker();
+  const result = workbench.result;
+  const selected = workbench.selected;
+  const analysis = result && selected ? { result, selected } : undefined;
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [editedTitle, setEditedTitle] = useState("");
 
@@ -99,7 +102,7 @@ export function IntentRanker() {
               </Alert>
             )}
 
-            {!workbench.importedLog && !workbench.isImporting ? (
+            {(!workbench.importedLog || !analysis) && !workbench.isImporting ? (
               <section className="mx-auto flex min-h-[calc(100vh-140px)] max-w-2xl flex-col items-center justify-center text-center">
                 <h1 className="font-heading text-2xl font-semibold tracking-tight sm:text-3xl">
                   Rank an ambiguous conversation
@@ -127,7 +130,7 @@ export function IntentRanker() {
                   <div className="h-full w-1/3 animate-pulse rounded-full bg-primary" />
                 </div>
               </section>
-            ) : (
+            ) : analysis ? (
               <>
                 <div className="mb-5">
                   {isEditingTitle ? (
@@ -189,31 +192,33 @@ export function IntentRanker() {
                 <div className="grid items-start gap-5 xl:grid-cols-[330px_minmax(460px,1fr)_320px] 2xl:grid-cols-[360px_minmax(560px,1fr)_350px]">
                   <ConversationPanel
                     messages={workbench.messages}
-                    totalFixtureMessages={workbench.messages.length}
                     userName={workbench.importedLog?.userId ?? "Unknown user"}
                     userRole={workbench.importedLog?.domain?.name ?? "Domain not supplied"}
                     isProcessing={workbench.isProcessing}
                     customMessage={workbench.customMessage}
                     onCustomMessageChange={workbench.setCustomMessage}
                     onAddCustomMessage={workbench.handleAddCustomMessage}
-                    onProcessNext={() => undefined}
                     onReset={workbench.handleReset}
                   />
                   <RankingPanel
-                    result={workbench.result}
-                    selectedId={workbench.selected.id}
+                    result={analysis.result}
+                    selectedId={analysis.selected.id}
                     acceptedInterpretationId={workbench.acceptedInterpretationId}
                     onSelect={workbench.setSelectedId}
                   />
                   <EvidencePanel
-                    result={workbench.result}
-                    selected={workbench.selected}
+                    result={analysis.result}
+                    selected={analysis.selected}
                     canSaveOutcome={
                       !workbench.resultStale &&
                       Boolean(
                         workbench.persistence?.identified &&
                           workbench.persistence.rankingRunId,
                       )
+                    }
+                    canAcceptOutcome={
+                      (analysis.selected.kind ?? "task") === "task" &&
+                      analysis.selected.valid !== false
                     }
                     outcomeStatus={workbench.outcomeStatus}
                     acceptedInterpretationId={workbench.acceptedInterpretationId}
@@ -236,11 +241,11 @@ export function IntentRanker() {
                     </>
                   )}
                   <span>
-                    {workbench.result.semanticModel.name}@{workbench.result.semanticModel.revision}
+                    {analysis.result.semanticModel.name}@{analysis.result.semanticModel.revision}
                   </span>
                 </footer>
               </>
-            )}
+            ) : null}
           </div>
           </main>
         </div>

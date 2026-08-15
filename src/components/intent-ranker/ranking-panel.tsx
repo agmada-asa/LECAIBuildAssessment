@@ -120,8 +120,10 @@ function InterpretationCard({
                 />
                 {Math.abs(movement)} place{Math.abs(movement) === 1 ? "" : "s"}
               </span>
-            ) : (
+            ) : item.previousRank ? (
               <span className="text-xs text-muted-foreground">Rank unchanged</span>
+            ) : (
+              <span className="text-xs text-muted-foreground">New candidate</span>
             )}
             <span className="font-mono text-xs text-muted-foreground">
               <span>weighted score {item.total.toFixed(3)}</span>
@@ -149,7 +151,6 @@ export function RankingPanel({
   onSelect: (id: string) => void;
 }) {
   const winner = result.ranking[0];
-  const movement = rankMovement(winner);
   // Older persisted snapshots predate task-family confidence. Falling back to
   // exact-candidate confidence keeps those records safe to reopen.
   const decisionConfidence = result.decisionConfidence ?? winner.confidence;
@@ -202,7 +203,7 @@ export function RankingPanel({
         </Badge>
       </div>
 
-      {movement > 0 && (
+      {result.rankingChange?.winnerChanged && (
         <div
           role="status"
           aria-live="polite"
@@ -212,14 +213,14 @@ export function RankingPanel({
             <HugeiconsIcon icon={GitCompareIcon} className="size-4" strokeWidth={2} />
           </div>
           <p className="leading-5">
-            <span className="font-semibold">Ranking shifted.</span> “{winner.title}” moved from #
-            {winner.previousRank} to #1 after the latest message.
-            {result.rankingChange && (
-              <span className="mt-1 block text-muted-foreground">
-                {result.rankingChange.previousWinnerExplanation}{" "}
-                {result.rankingChange.currentWinnerExplanation}
-              </span>
-            )}
+            <span className="font-semibold">Ranking shifted.</span>{" "}
+            {winner.previousRank
+              ? `“${winner.title}” moved from #${winner.previousRank} to #1 after the latest message.`
+              : `“${winner.title}” is a newly introduced #1 after the latest message.`}
+            <span className="mt-1 block text-muted-foreground">
+              {result.rankingChange.previousWinnerExplanation}{" "}
+              {result.rankingChange.currentWinnerExplanation}
+            </span>
           </p>
         </div>
       )}

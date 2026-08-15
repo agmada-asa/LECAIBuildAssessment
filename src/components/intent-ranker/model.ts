@@ -5,8 +5,6 @@ import type { ProviderId } from "@/lib/providers/types";
 import type { RankSuccessResponse } from "@/lib/ranking/api";
 import type {
   ConversationMessage,
-  RankingInput,
-  Scenario,
   SignalKey,
   SignalWeights,
 } from "@/lib/ranking/types";
@@ -49,36 +47,6 @@ export function pointDelta(value: number): string {
   return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(1)} pts`;
 }
 
-/** Converts a walkthrough snapshot into the canonical log used by imports. */
-export function scenarioConversationLog(
-  scenario: Scenario,
-  messages: ConversationMessage[],
-): ConversationLog {
-  return {
-    conversationId: scenario.id,
-    userId: scenario.userName.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
-    domain: { name: scenario.userRole },
-    messages: messages.map((message, index) => ({
-      ...message,
-      timestamp: Number.isNaN(Date.parse(message.timestamp))
-        ? `2026-08-14T${message.timestamp}:00.000Z`
-        : new Date(message.timestamp).toISOString(),
-      id: message.id || `M${index + 1}`,
-    })),
-    acceptedOutcomes: scenario.history
-      .filter((outcome) => outcome.accepted)
-      .map((outcome) => ({
-        id: outcome.id,
-        interpretationId: outcome.interpretationId,
-        title:
-          scenario.interpretations.find((item) => item.id === outcome.interpretationId)
-            ?.title ?? "Accepted task",
-        summary: outcome.summary,
-        semanticTerms: outcome.terms,
-      })),
-  };
-}
-
 /** Returns the first generated ID that does not collide with source IDs. */
 export function nextMessageId(messages: ConversationMessage[]): string {
   const usedIds = new Set(messages.map((message) => message.id));
@@ -92,7 +60,6 @@ export async function requestRanking(
   conversation: ConversationLog,
   provider: ProviderId,
   weights: SignalWeights,
-  previousInput?: RankingInput,
   signal?: AbortSignal,
   queuedTask?: QueuedTaskReference,
 ): Promise<RankSuccessResponse> {
@@ -102,7 +69,7 @@ export async function requestRanking(
       "content-type": "application/json",
       [DEVICE_ID_HEADER]: getOrCreateDeviceId(),
     },
-    body: JSON.stringify({ provider, conversation, weights, previousInput, queuedTask }),
+    body: JSON.stringify({ provider, conversation, weights, queuedTask }),
     signal,
   });
   const rawBody = (await response.json()) as unknown;

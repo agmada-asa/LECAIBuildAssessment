@@ -23,6 +23,7 @@ export function EvidencePanel({
   result,
   selected,
   canSaveOutcome,
+  canAcceptOutcome,
   outcomeStatus,
   acceptedInterpretationId,
   isSavingOutcome = false,
@@ -31,6 +32,8 @@ export function EvidencePanel({
   result: RankingResult;
   selected: RankedInterpretation;
   canSaveOutcome: boolean;
+  /** Only grounded task candidates may become positive future task history. */
+  canAcceptOutcome: boolean;
   outcomeStatus: string;
   acceptedInterpretationId?: string;
   isSavingOutcome?: boolean;
@@ -140,19 +143,21 @@ export function EvidencePanel({
               )}
               <h3 className="text-xs font-semibold">Save this decision</h3>
               <div className="mt-2 grid grid-cols-1 gap-2">
-                <Button
-                  className="w-full"
-                  size="sm"
-                  aria-label={selectedIsAccepted ? "Interpretation accepted" : undefined}
-                  disabled={selectedIsAccepted || isSavingOutcome}
-                  onClick={() => onOutcome("accepted")}
-                >
-                  {selectedIsAccepted
-                    ? "Accepted"
-                    : isSavingOutcome
-                      ? "Saving decision…"
-                      : "Accept interpretation"}
-                </Button>
+                {canAcceptOutcome && (
+                  <Button
+                    className="w-full"
+                    size="sm"
+                    aria-label={selectedIsAccepted ? "Interpretation accepted" : undefined}
+                    disabled={selectedIsAccepted || isSavingOutcome}
+                    onClick={() => onOutcome("accepted")}
+                  >
+                    {selectedIsAccepted
+                      ? "Accepted"
+                      : isSavingOutcome
+                        ? "Saving decision…"
+                        : "Accept interpretation"}
+                  </Button>
+                )}
                 <Button
                   className="w-full"
                   size="sm"

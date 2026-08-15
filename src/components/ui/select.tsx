@@ -1,4 +1,4 @@
-/** @file shadcn select primitives used for scenario and policy choices. */
+/** @file shadcn select primitives used for provider and policy choices. */
 
 "use client"
 
