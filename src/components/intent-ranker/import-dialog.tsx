@@ -29,6 +29,7 @@ type ConversationImportDialogProps = {
   provider: ProviderId;
   onProviderChange: (provider: ProviderId) => void;
   onAnalyze: (log: ConversationLog, provider: ProviderId) => Promise<void>;
+  trigger?: React.ReactNode;
 };
 
 /** Imports, validates, previews, and dispatches one arbitrary conversation. */
@@ -37,6 +38,7 @@ export function ConversationImportDialog({
   provider,
   onProviderChange,
   onAnalyze,
+  trigger,
 }: ConversationImportDialogProps) {
   const [open, setOpen] = useState(false);
   const [source, setSource] = useState("");
@@ -116,8 +118,18 @@ export function ConversationImportDialog({
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger render={<Button size="sm" className="rounded-full" />}>
-        Analyze a log
+      <DialogTrigger
+        render={
+          trigger ? (
+            (trigger as React.ReactElement)
+          ) : (
+            <Button size="sm" variant="outline" className="rounded-full">
+              Analyze a log
+            </Button>
+          )
+        }
+      >
+        {!trigger && "Analyze a log"}
       </DialogTrigger>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[640px]">
         <DialogHeader>

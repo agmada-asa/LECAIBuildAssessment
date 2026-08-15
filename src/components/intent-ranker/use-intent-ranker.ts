@@ -327,8 +327,16 @@ export function useIntentRanker() {
       setQueueRefreshRevision((revision) => revision + 1);
     } catch (caught) {
       if (!isCurrentRequest(request)) return;
+      // A replacement import must never leave the previous conversation's
+      // ranking visible beneath an error for the newly requested log.
+      setImportedLog(log);
+      setRemoteResult(undefined);
+      setPersistence(undefined);
+      setAnalysisSource(undefined);
+      setSelectedId("");
+      setConversationRename(undefined);
       setAnalysisError(caught instanceof Error ? caught.message : "Analysis failed.");
-      setResultStale(true);
+      setResultStale(false);
       setQueueRefreshRevision((revision) => revision + 1);
     } finally {
       if (isCurrentRequest(request)) setIsImporting(false);

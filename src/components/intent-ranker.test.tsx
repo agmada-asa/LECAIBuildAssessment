@@ -50,6 +50,7 @@ describe("IntentRanker", () => {
     render(<IntentRanker />);
 
     expect(screen.getByRole("heading", { name: "Rank an ambiguous conversation" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start a conversation" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Analyze a log" })).toBeInTheDocument();
     expect(screen.queryByRole("combobox", { name: "Demo scenario" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Plausible readings" })).not.toBeInTheDocument();
@@ -664,6 +665,69 @@ describe("IntentRanker", () => {
     expect(screen.getByText(/Provider returned 401 Unauthorized/)).toBeInTheDocument();
   });
 
+  it("removes the previous ranking when a replacement import fails", async () => {
+    const scenario = getScenario("finance-reframe");
+    const previousConversation = {
+      conversationId: "previous-success",
+      userId: "reviewer",
+      messages: scenario.messages,
+      acceptedOutcomes: [],
+    };
+    const previousResult = rankConversation(
+      scenario,
+      previousConversation.messages,
+      DEFAULT_WEIGHTS,
+    );
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/providers") {
+        return new Response(JSON.stringify({ providers: operationalApiProviders }));
+      }
+      if (String(input) === "/api/state") {
+        return new Response(JSON.stringify({
+          reference: { id: "run-previous", state: "decided" },
+          run: {
+            provider: "api",
+            conversation: previousConversation,
+            input: scenario,
+            result: previousResult,
+          },
+        }));
+      }
+      if (String(input) === "/api/queue") {
+        return new Response(JSON.stringify({ tasks: [] }));
+      }
+      if (String(input) === "/api/rank") {
+        return new Response(JSON.stringify({ error: "Malformed provider output" }), {
+          status: 502,
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<IntentRanker />);
+
+    expect(await screen.findByText(previousResult.ranking[0].title)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Analyze a log" }));
+    await user.type(
+      screen.getByRole("textbox", { name: "Paste conversation log" }),
+      "A replacement conversation that fails analysis.",
+    );
+    await user.click(screen.getByRole("button", { name: "Preview conversation" }));
+    await user.clear(screen.getByRole("textbox", { name: "Conversation name" }));
+    await user.type(
+      screen.getByRole("textbox", { name: "Conversation name" }),
+      "failed-replacement",
+    );
+    await user.click(screen.getByRole("button", { name: "Analyze 1 messages" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "No ranking is shown for failed-replacement",
+    );
+    expect(screen.queryByText(previousResult.ranking[0].title)).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Plausible readings" })).not.toBeInTheDocument();
+  });
+
   it("allows analyzing a second conversation without the button being frozen", async () => {
     const scenario = getScenario("finance-reframe");
     const firstResult = rankConversation(scenario, scenario.messages.slice(0, 1), DEFAULT_WEIGHTS);
@@ -860,5 +924,174 @@ describe("IntentRanker", () => {
       nextConversationId: "my-renamed-task",
     });
     resolveRename?.(new Response(JSON.stringify({ renamed: true })));
+  });
+
+  it("expands a candidate card into a modal displaying untruncated text via Show more", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const scenario = getScenario("finance-reframe");
+    const result = rankConversation(scenario, scenario.messages, DEFAULT_WEIGHTS);
+    const candidate = result.ranking[0];
+
+    render(
+      <RankingPanel
+        result={result}
+        selectedId={candidate.id}
+        onSelect={vi.fn()}
+      />,
+    );
+
+    // Initial card view has line-clamp on summary
+    const card = screen.getByRole("button", { name: new RegExp(candidate.title, "i") });
+    expect(card).toBeInTheDocument();
+
+    // Click the Show more button on the card
+    const showMoreButton = screen.getByRole("button", {
+      name: `Show more for #${candidate.rank}`,
+    });
+    expect(showMoreButton).toHaveTextContent("Show more");
+    await user.click(showMoreButton);
+
+    // Modal dialog is open
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toBeInTheDocument();
+
+    // Untruncated summary and explanation are present in the dialog
+    expect(within(dialog).getByText(candidate.summary)).toBeInTheDocument();
+    expect(within(dialog).getByText(candidate.explanation)).toBeInTheDocument();
+    expect(within(dialog).getByText(candidate.title)).toBeInTheDocument();
+
+    // All evidence items are rendered without truncation
+    for (const evidence of candidate.evidence) {
+      expect(within(dialog).getByText(evidence.text)).toBeInTheDocument();
+    }
+
+    // Close the dialog
+    await user.click(within(dialog).getByRole("button", { name: "Done" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("selects a candidate without opening the modal when clicking the card", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const scenario = getScenario("finance-reframe");
+    const result = rankConversation(scenario, scenario.messages, DEFAULT_WEIGHTS);
+    const candidate = result.ranking[0];
+    const onSelect = vi.fn();
+
+    render(
+      <RankingPanel
+        result={result}
+        selectedId={candidate.id}
+        onSelect={onSelect}
+      />,
+    );
+
+    // Clicking the card directly calls onSelect and does not open modal
+    const card = screen.getByRole("button", { name: new RegExp(candidate.title, "i") });
+    await user.click(card);
+
+    expect(onSelect).toHaveBeenCalledWith(candidate.id);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("allows navigating between candidates inside the detail modal", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const scenario = getScenario("finance-reframe");
+    const result = rankConversation(scenario, scenario.messages, DEFAULT_WEIGHTS);
+    expect(result.ranking.length).toBeGreaterThan(1);
+    const firstCandidate = result.ranking[0];
+    const secondCandidate = result.ranking[1];
+
+    render(
+      <RankingPanel
+        result={result}
+        selectedId={firstCandidate.id}
+        onSelect={vi.fn()}
+      />,
+    );
+
+    await user.click(
+      screen.getByRole("button", {
+        name: `Show more for #${firstCandidate.rank}`,
+      }),
+    );
+
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText(firstCandidate.title)).toBeInTheDocument();
+
+    // Click Next candidate button inside dialog
+    const nextButton = within(dialog).getByRole("button", { name: /next candidate/i });
+    await user.click(nextButton);
+
+    expect(within(dialog).getByText(secondCandidate.title)).toBeInTheDocument();
+    expect(within(dialog).getByText(secondCandidate.summary)).toBeInTheDocument();
+  });
+
+  it("starts a new conversation from direct user input and submits it to /api/rank", async () => {
+    const scenario = getScenario("finance-reframe");
+    const apiResult = rankConversation(scenario, scenario.messages, DEFAULT_WEIGHTS);
+    const fetchMock = vi.fn(
+      async (...args: [input: RequestInfo | URL, init?: RequestInit]) => {
+        const [input] = args;
+        if (String(input) === "/api/providers") {
+          return new Response(
+            JSON.stringify({
+              providers: operationalApiProviders,
+            }),
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            provider: {
+              id: "api",
+              name: "OpenAI-compatible API",
+              fallback: false,
+              notes: "Live provider analysis",
+            },
+            input: scenario,
+            result: apiResult,
+          }),
+        );
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<IntentRanker />);
+
+    await user.click(screen.getByRole("button", { name: "Start a conversation" }));
+    await user.type(
+      screen.getByRole("textbox", { name: "Initial message" }),
+      "Please prepare the quarterly earnings summary in CSV format.",
+    );
+    await user.type(
+      screen.getByRole("textbox", { name: "Conversation name (optional)" }),
+      "Earnings Summary",
+    );
+    await user.type(
+      screen.getByRole("textbox", { name: "User name (optional)" }),
+      "Finance Lead",
+    );
+    await user.type(
+      screen.getByRole("textbox", { name: "Domain (optional)" }),
+      "Finance",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Start conversation" }));
+
+    const rankCall = fetchMock.mock.calls.find(([url]) => String(url) === "/api/rank");
+    const queueCall = fetchMock.mock.calls.find(([url]) => String(url) === "/api/queue");
+    expect(rankCall).toBeTruthy();
+    expect(queueCall).toBeTruthy();
+    const body = JSON.parse((rankCall?.[1] as RequestInit).body as string);
+    expect(body.conversation.conversationId).toBe("Earnings Summary");
+    expect(body.conversation.userId).toBe("Finance Lead");
+    expect(body.conversation.domain).toEqual({ name: "Finance" });
+    expect(body.conversation.messages).toHaveLength(1);
+    expect(body.conversation.messages[0].text).toBe(
+      "Please prepare the quarterly earnings summary in CSV format.",
+    );
+    expect(
+      screen.getByRole("heading", { name: "Earnings Summary" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Finance Lead")).toBeInTheDocument();
   });
 });

@@ -37,6 +37,9 @@ export const SIGNAL_META: Record<
 
 export const SIGNAL_KEYS = Object.keys(SIGNAL_META) as SignalKey[];
 
+/** Maximum time the interactive workbench waits for one complete analysis. */
+export const ANALYSIS_REQUEST_TIMEOUT_MS = 90_000;
+
 /** Formats a normalised value as a whole-number percentage for compact labels. */
 export function percentage(value: number): string {
   return `${Math.round(value * 100)}%`;
@@ -63,34 +66,56 @@ export async function requestRanking(
   signal?: AbortSignal,
   queuedTask?: QueuedTaskReference,
 ): Promise<RankSuccessResponse> {
-  const response = await fetch("/api/rank", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      [DEVICE_ID_HEADER]: getOrCreateDeviceId(),
-    },
-    body: JSON.stringify({ provider, conversation, weights, queuedTask }),
-    signal,
-  });
-  const rawBody = (await response.json()) as unknown;
-  if (
-    !response.ok ||
-    (typeof rawBody === "object" &&
-      rawBody !== null &&
-      "error" in rawBody &&
-      Boolean((rawBody as { error: unknown }).error))
-  ) {
-    const errorPayload = (rawBody as { error?: unknown })?.error;
-    const message =
-      typeof errorPayload === "string"
-        ? errorPayload
-        : typeof errorPayload === "object" &&
-            errorPayload !== null &&
-            "message" in errorPayload &&
-            typeof (errorPayload as { message: unknown }).message === "string"
-          ? (errorPayload as { message: string }).message
-          : "The ranking service returned an invalid response.";
-    throw new Error(message);
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, ANALYSIS_REQUEST_TIMEOUT_MS);
+  const abortFromCaller = () => controller.abort();
+  if (signal?.aborted) abortFromCaller();
+  else signal?.addEventListener("abort", abortFromCaller, { once: true });
+
+  try {
+    const response = await fetch("/api/rank", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        [DEVICE_ID_HEADER]: getOrCreateDeviceId(),
+      },
+      body: JSON.stringify({ provider, conversation, weights, queuedTask }),
+      signal: controller.signal,
+    });
+    const rawBody = (await response.json()) as unknown;
+    if (
+      !response.ok ||
+      (typeof rawBody === "object" &&
+        rawBody !== null &&
+        "error" in rawBody &&
+        Boolean((rawBody as { error: unknown }).error))
+    ) {
+      const errorPayload = (rawBody as { error?: unknown })?.error;
+      const message =
+        typeof errorPayload === "string"
+          ? errorPayload
+          : typeof errorPayload === "object" &&
+              errorPayload !== null &&
+              "message" in errorPayload &&
+              typeof (errorPayload as { message: unknown }).message === "string"
+            ? (errorPayload as { message: string }).message
+            : "The ranking service returned an invalid response.";
+      throw new Error(message);
+    }
+    return rawBody as RankSuccessResponse;
+  } catch (error) {
+    if (timedOut) {
+      throw new Error(
+        "Analysis took longer than 90 seconds. Try again or choose another provider.",
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener("abort", abortFromCaller);
   }
-  return rawBody as RankSuccessResponse;
 }

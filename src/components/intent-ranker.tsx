@@ -13,6 +13,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { ConversationPanel } from "./intent-ranker/conversation-panel";
 import { EvidencePanel } from "./intent-ranker/evidence-panel";
 import { ConversationImportDialog } from "./intent-ranker/import-dialog";
+import { StartConversationDialog } from "./intent-ranker/start-dialog";
 import { RankingPanel } from "./intent-ranker/ranking-panel";
 import { TaskSidebar } from "./intent-ranker/task-sidebar";
 import { ProviderSettings, WeightSettings } from "./intent-ranker/settings-dialogs";
@@ -49,6 +50,12 @@ export function IntentRanker() {
             </p>
 
             <div className="ml-auto flex items-center gap-2">
+              <StartConversationDialog
+                providers={workbench.providers}
+                provider={workbench.selectedProvider}
+                onProviderChange={workbench.setSelectedProvider}
+                onStart={workbench.handleImportedAnalysis}
+              />
               <ConversationImportDialog
                 providers={workbench.providers}
                 provider={workbench.selectedProvider}
@@ -90,7 +97,13 @@ export function IntentRanker() {
                 <HugeiconsIcon icon={Alert02Icon} className="size-4" strokeWidth={2} />
                 <AlertTitle>Analysis could not be completed</AlertTitle>
                 <AlertDescription>
-                  {workbench.analysisError} Choose “Analyze a log” to retry with the current log.
+                  {workbench.analysisError}{" "}
+                  {analysis && workbench.resultStale
+                    ? "The last successful ranking remains visible because the follow-up was not applied."
+                    : workbench.importedLog
+                      ? `No ranking is shown for ${workbench.importedLog.conversationId}.`
+                      : "No ranking is shown."}{" "}
+                  Choose “Start a conversation” or “Analyze a log” to retry.
                 </AlertDescription>
               </Alert>
             )}
@@ -108,9 +121,9 @@ export function IntentRanker() {
                   Rank an ambiguous conversation
                 </h1>
                 <p className="mt-3 max-w-lg text-sm leading-6 text-muted-foreground">
-                  Import JSON, CSV, or TXT to compare grounded interpretations and route uncertain work for review.
+                  Start a new conversation or import a log (JSON, CSV, or TXT) to compare grounded interpretations and route uncertain work for review.
                 </p>
-                <p className="mt-4 text-sm font-medium">Choose “Analyze a log” to begin.</p>
+                <p className="mt-4 text-sm font-medium">Choose “Start a conversation” or “Analyze a log” to begin.</p>
               </section>
             ) : workbench.isImporting ? (
               <section
