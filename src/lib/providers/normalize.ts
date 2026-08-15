@@ -44,7 +44,7 @@ export const providerAnalysisSchema = z.object({
         features: z.array(featureSchema).min(1).max(20),
       }),
     )
-    .min(3)
+    .min(1)
     .max(5),
   constraints: z.array(
     z.object({
@@ -141,6 +141,17 @@ function hasGroundedLabel(label: string, phrase: string): boolean {
   return [...labelTerms].some((term) => phraseTerms.has(term));
 }
 
+/** Checks whether the source phrase names the canonical constraint itself. */
+function hasGroundedConstraintIdentity(
+  dimension: string,
+  value: string,
+  phrase: string,
+): boolean {
+  const identityTerms = groundingTerms(`${dimension} ${value.replace(/-/g, " ")}`);
+  const phraseTerms = groundingTerms(phrase);
+  return [...identityTerms].some((term) => phraseTerms.has(term));
+}
+
 /** A pure acknowledgement cannot support a new constraint or task boundary. */
 function isConversationalAcknowledgement(value: string): boolean {
   const text = normaliseText(value);
@@ -155,6 +166,10 @@ function containsTaskRequest(value: string): boolean {
   return (
     /\b(?:can|could|would|will) you\b/.test(text) ||
     /\b(?:please|must|need to|have to|make sure)\b/.test(text) ||
+    /\b(?:i|we) (?:need|want|require)\b/.test(text) ||
+    /\b(?:task|request|brief|deliverable|goal|priority|work) (?:is|becomes|should be|has changed to)\b/.test(
+      text,
+    ) ||
     /^(?:add|book|build|call|check|compare|create|draft|export|find|fix|get|investigate|make|prepare|publish|record|remove|review|schedule|send|set|show|summari[sz]e|tell|test|update|write)\b/.test(
       text,
     )
@@ -292,10 +307,6 @@ export function normalizeProviderAnalysis(
     });
   });
 
-  if (interpretations.length < 3) {
-    throw new Error("The provider must return at least three genuinely distinct interpretations.");
-  }
-
   const instructionMessages = selectUserInstructionMessages(log.messages);
   const sourceText = instructionMessages.map((message) => normaliseText(message.text));
   const sourceMessageIds = new Set(instructionMessages.map((message) => message.id));
@@ -323,12 +334,30 @@ export function normalizeProviderAnalysis(
         : conversationAssessment.kind === "insufficient-context"
           ? "insufficient-context"
           : undefined;
-  if (
-    expectedCandidateKind &&
-    !interpretations.some((candidate) => candidate.kind === expectedCandidateKind)
-  ) {
+  const compatibleInterpretations = expectedCandidateKind
+    ? interpretations.filter((candidate) => candidate.kind === expectedCandidateKind)
+    : interpretations;
+  const requiresCompetingTasks =
+    conversationAssessment.kind === "actionable-task" ||
+    conversationAssessment.kind === "undetermined";
+  if (interpretations.length < (requiresCompetingTasks ? 3 : 1)) {
+    throw new Error(
+      requiresCompetingTasks
+        ? "The provider must return at least three genuinely distinct interpretations."
+        : "The provider must return a grounded interpretation matching its conversation assessment.",
+    );
+  }
+  if (expectedCandidateKind && compatibleInterpretations.length === 0) {
     throw new Error(
       `The provider must return a ${expectedCandidateKind} interpretation matching its conversation assessment.`,
+    );
+  }
+  if (
+    conversationAssessment.kind === "actionable-task" &&
+    compatibleInterpretations.length < 3
+  ) {
+    throw new Error(
+      "The provider must return at least three distinct task interpretations matching its conversation assessment.",
     );
   }
   (analysis.taskBoundaries ?? []).forEach((boundary) => {
@@ -361,10 +390,30 @@ export function normalizeProviderAnalysis(
         `Constraint dimension “${constraint.dimension}” is missing from candidate features.`,
       );
     }
-    const phrases = constraintPhrases.filter((phrase) =>
+    const identityGroundedPhrases = constraintPhrases.filter(
+      (phrase) =>
+        hasGroundedLabel(constraint.label, phrase) ||
+        hasGroundedConstraintIdentity(
+          constraint.dimension,
+          constraint.value,
+          phrase,
+        ),
+    );
+    if (!identityGroundedPhrases.length) {
+      throw new Error(
+        `Constraint “${constraint.id}” label and canonical identity are not grounded in its source phrase.`,
+      );
+    }
+    const labelGrounded = identityGroundedPhrases.some((phrase) =>
       hasGroundedLabel(constraint.label, phrase),
     );
-    return phrases.length ? [{ ...constraint, phrases }] : [];
+    // The exact source phrase is already validated and is safer than silently
+    // removing an explicit instruction because a provider paraphrased its label.
+    return [{
+      ...constraint,
+      phrases: identityGroundedPhrases,
+      label: labelGrounded ? constraint.label : identityGroundedPhrases[0],
+    }];
   });
 
   const messageTextById = new Map(

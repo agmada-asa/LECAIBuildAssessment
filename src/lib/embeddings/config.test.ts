@@ -42,6 +42,35 @@ describe("embedding runtime configuration", () => {
     });
   });
 
+  it("requires API embeddings even when Codex CLI supplies candidate analysis", () => {
+    expect(() =>
+      createConfiguredEmbeddingProvider({
+        NODE_ENV: "production",
+        PATH: "/usr/local/bin:/usr/bin",
+        CODEX_HOME: "/Users/example/.codex",
+      }),
+    ).toThrow("OpenAI-compatible embedding configuration is incomplete");
+  });
+
+  it("does not require an API analysis model when Codex CLI supplies candidate analysis", () => {
+    const provider = createConfiguredEmbeddingProvider({
+      NODE_ENV: "production",
+      EMBEDDING_PROVIDER: "openai-compatible",
+      OPENAI_COMPATIBLE_BASE_URL: "https://example.test/v1",
+      OPENAI_COMPATIBLE_API_KEY: "secret",
+      OPENAI_COMPATIBLE_EMBEDDING_MODEL: "example-embed-2026-08-01",
+      OPENAI_COMPATIBLE_EMBEDDING_REVISION: "2026-08-01",
+      OPENAI_COMPATIBLE_EMBEDDING_DIMENSIONS: "3",
+      OPENAI_COMPATIBLE_EMBEDDING_MAX_INPUT_TOKENS: "8192",
+    });
+
+    expect(provider.model).toMatchObject({
+      provider: "openai-compatible",
+      name: "example-embed-2026-08-01",
+      purpose: "production",
+    });
+  });
+
   it("rejects local embedding providers", () => {
     expect(() =>
       createConfiguredEmbeddingProvider({

@@ -38,7 +38,7 @@ export type ProviderStatus = {
 
 export type ProviderInterpretation = {
   id: string;
-  /** Optional only for compatibility with deterministic fixtures and old tests. */
+  /** Optional only for compatibility with results stored before actionability gating. */
   kind?: "task" | "conversation" | "insufficient-context";
   title: string;
   summary: string;
@@ -63,7 +63,7 @@ export type ProviderTaskBoundary = {
 };
 
 export type ProviderAnalysis = {
-  /** Live-provider schemas require this; optionality preserves legacy fixtures. */
+  /** Live-provider schemas require this; optionality preserves older stored results. */
   conversationAssessment?: {
     kind: "actionable-task" | "ordinary-conversation" | "insufficient-context";
     summary: string;

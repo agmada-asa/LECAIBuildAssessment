@@ -1,8 +1,8 @@
 /**
  * @file Optional HTTP boundary for structured live candidate extraction.
  *
- * The deterministic walkthrough does not call this route. Live requests are
- * validated here before crossing into the server-only CLI adapter.
+ * Requests are validated here before crossing into a server-only live-provider
+ * adapter.
  */
 
 import { NextResponse } from "next/server";

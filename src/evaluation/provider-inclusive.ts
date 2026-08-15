@@ -5,7 +5,7 @@ import { analyseWithDemo } from "@/lib/providers/demo";
 import { normalizeProviderAnalysis } from "@/lib/providers/normalize";
 import type { ProviderAnalysis } from "@/lib/providers/types";
 import { rankConversation } from "@/lib/ranking/engine";
-import { DEFAULT_WEIGHTS } from "@/lib/ranking/scenarios";
+import { DEFAULT_WEIGHTS } from "@/lib/ranking/policy";
 import { normaliseText, tokenOverlap } from "@/lib/ranking/text";
 
 export type ProviderEvaluationCase = {
@@ -149,7 +149,6 @@ export function evaluateProviderInclusive(
       }
     } catch {
       generationFailures += 1;
-      if (item.expectedReview) reviewCorrect += 1;
     }
   });
 

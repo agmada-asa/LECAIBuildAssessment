@@ -1,7 +1,7 @@
 /** @file Reproducible evaluation runner for ranking and review-decision metrics. */
 
 import { rankConversation } from "@/lib/ranking/engine";
-import { DEFAULT_WEIGHTS } from "@/lib/ranking/scenarios";
+import { DEFAULT_WEIGHTS } from "@/lib/ranking/policy";
 import { EVALUATION_DATASET, type EvaluationCase } from "./dataset";
 import type { EmbeddingProvider } from "@/lib/embeddings/types";
 

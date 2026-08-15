@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { createConfiguredEmbeddingProvider } from "@/lib/embeddings/config";
 import { rankConversationAsync, reweightRankingResult } from "@/lib/ranking/engine";
-import { DEFAULT_WEIGHTS } from "@/lib/ranking/scenarios";
+import { DEFAULT_WEIGHTS } from "@/lib/ranking/policy";
 import { EVALUATION_DATASET } from "./dataset";
 import { EMBEDDING_ACCEPTANCE_THRESHOLDS } from "./embedding-benchmark";
 

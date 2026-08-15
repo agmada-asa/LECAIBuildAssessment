@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { normalizeProviderAnalysis } from "./normalize";
 import type { ConversationLog } from "@/lib/conversations/schema";
 import { rankConversation } from "@/lib/ranking/engine";
-import { DEFAULT_WEIGHTS } from "@/lib/ranking/scenarios";
+import { DEFAULT_WEIGHTS } from "@/lib/ranking/policy";
 
 const log: ConversationLog = {
   conversationId: "c1",
@@ -64,6 +64,50 @@ const validAnalysis = {
 };
 
 describe("normalizeProviderAnalysis", () => {
+  it("accepts one grounded insufficient-context reading for human review", () => {
+    const sparseLog: ConversationLog = {
+      conversationId: "missing-referent",
+      userId: "u1",
+      messages: [
+        {
+          id: "M1",
+          text: "Can you sort that out?",
+          timestamp: "2026-08-14T18:00:00.000Z",
+        },
+      ],
+      acceptedOutcomes: [],
+    };
+
+    const result = normalizeProviderAnalysis(
+      {
+        conversationAssessment: {
+          kind: "insufficient-context",
+          summary: "The requested action has no recoverable referent.",
+          evidenceMessageIds: ["M1"],
+          knownFacts: ["The user wants an action performed."],
+          unknowns: ["What ‘that’ refers to."],
+        },
+        interpretations: [
+          {
+            id: "missing-referent",
+            kind: "insufficient-context",
+            title: "Insufficient context",
+            summary: "The underlying action cannot be recovered.",
+            semanticTerms: ["sort that out", "missing referent", "unknown action"],
+            features: ["actionability:insufficient-context"],
+          },
+        ],
+        constraints: [],
+        taskBoundaries: [],
+        notes: "Human clarification is required.",
+      },
+      sparseLog,
+    );
+
+    expect(result.interpretations).toHaveLength(1);
+    expect(result.interpretations[0].kind).toBe("insufficient-context");
+  });
+
   it("does not accept a conversational acknowledgement as a task boundary", () => {
     const dinnerLog: ConversationLog = {
       conversationId: "dinner",
@@ -176,6 +220,117 @@ describe("normalizeProviderAnalysis", () => {
     ]);
   });
 
+  it("preserves a declarative task replacement with a grounded topic", () => {
+    const declarativeLog: ConversationLog = {
+      ...log,
+      messages: [
+        {
+          id: "M1",
+          text: "Prepare onboarding slides for the client.",
+          timestamp: "2026-08-14T08:00:00.000Z",
+        },
+        {
+          id: "M2",
+          text: "Actually, the task is a finance incident report instead.",
+          timestamp: "2026-08-14T08:01:00.000Z",
+        },
+      ],
+    };
+    const result = normalizeProviderAnalysis(
+      {
+        ...validAnalysis,
+        interpretations: [
+          {
+            id: "incident-report",
+            title: "Write a finance incident report",
+            summary: "Document the finance incident for review.",
+            semanticTerms: ["finance", "incident", "report"],
+            features: ["topic:finance-incident", "format:report"],
+          },
+          {
+            id: "onboarding-slides",
+            title: "Prepare onboarding slides",
+            summary: "Create client onboarding slides.",
+            semanticTerms: ["client", "onboarding", "slides"],
+            features: ["topic:onboarding", "format:slides"],
+          },
+          {
+            id: "incident-dashboard",
+            title: "Publish a finance incident dashboard",
+            summary: "Show the finance incident in a dashboard.",
+            semanticTerms: ["finance", "incident", "dashboard"],
+            features: ["topic:finance-incident", "format:dashboard"],
+          },
+        ],
+        constraints: [
+          {
+            id: "onboarding-topic",
+            phrases: ["onboarding"],
+            dimension: "topic",
+            value: "onboarding",
+            mode: "require" as const,
+            strength: 1,
+            label: "Prepare onboarding material",
+          },
+          {
+            id: "slides-format",
+            phrases: ["slides"],
+            dimension: "format",
+            value: "slides",
+            mode: "require" as const,
+            strength: 1,
+            label: "Prepare slides",
+          },
+          {
+            id: "incident-topic",
+            phrases: ["finance incident"],
+            dimension: "topic",
+            value: "finance-incident",
+            mode: "require" as const,
+            strength: 1,
+            label: "Handle the finance incident",
+          },
+          {
+            id: "report-format",
+            phrases: ["report"],
+            dimension: "format",
+            value: "report",
+            mode: "require" as const,
+            strength: 1,
+            label: "Produce a report",
+          },
+        ],
+        taskBoundaries: [
+          {
+            messageId: "M2",
+            reason: "The task changes from onboarding to a finance incident report.",
+          },
+        ],
+      },
+      declarativeLog,
+    );
+
+    expect(result.taskBoundaries).toEqual([
+      {
+        messageId: "M2",
+        reason: "The task changes from onboarding to a finance incident report.",
+      },
+    ]);
+    const ranked = rankConversation(result, declarativeLog.messages, DEFAULT_WEIGHTS);
+    expect(ranked.activeConstraints).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ dimension: "topic", value: "finance-incident" }),
+        expect.objectContaining({ dimension: "format", value: "report" }),
+      ]),
+    );
+    expect(ranked.activeConstraints).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ value: "onboarding" }),
+        expect.objectContaining({ value: "slides" }),
+      ]),
+    );
+  });
+
   it("rejects a task boundary that is not grounded in a source message", () => {
     expect(() =>
       normalizeProviderAnalysis(
@@ -225,6 +380,28 @@ describe("normalizeProviderAnalysis", () => {
     expect(result.constraintRules[0].phrases).toEqual(["produce slides"]);
   });
 
+  it("preserves a grounded constraint when its provider label is a paraphrase", () => {
+    const result = normalizeProviderAnalysis(
+      {
+        ...validAnalysis,
+        constraints: [
+          {
+            ...validAnalysis.constraints[0],
+            label: "Deliver a machine-readable export",
+          },
+        ],
+      },
+      log,
+    );
+
+    expect(result.constraintRules).toEqual([
+      expect.objectContaining({
+        phrases: ["as CSV"],
+        label: "as CSV",
+      }),
+    ]);
+  });
+
   it("requires at least three genuinely distinct candidates", () => {
     const duplicate = {
       ...validAnalysis,
@@ -238,6 +415,37 @@ describe("normalizeProviderAnalysis", () => {
     expect(() => normalizeProviderAnalysis(duplicate, log)).toThrow(
       /three genuinely distinct interpretations/,
     );
+  });
+
+  it("requires three candidates compatible with the conversation assessment", () => {
+    expect(() =>
+      normalizeProviderAnalysis(
+        {
+          conversationAssessment: {
+            kind: "actionable-task",
+            summary: "The user requested a CSV export.",
+            evidenceMessageIds: ["M2"],
+            knownFacts: ["Raw rows should be sent as CSV."],
+            unknowns: [],
+          },
+          interpretations: [
+            { ...validAnalysis.interpretations[0], kind: "task" },
+            {
+              ...validAnalysis.interpretations[1],
+              kind: "conversation",
+            },
+            {
+              ...validAnalysis.interpretations[2],
+              kind: "insufficient-context",
+            },
+          ],
+          constraints: [],
+          taskBoundaries: [],
+          notes: "Only one candidate is a task.",
+        },
+        log,
+      ),
+    ).toThrow(/three distinct task interpretations/i);
   });
 
   it("keeps similarly worded candidates when their canonical features conflict", () => {
@@ -506,13 +714,18 @@ describe("normalizeProviderAnalysis", () => {
       notes: "The provider treated an underspecified follow-up as a new task.",
     };
 
-    const input = normalizeProviderAnalysis(providerAnalysis, migrationLog);
+    const input = normalizeProviderAnalysis(
+      {
+        ...providerAnalysis,
+        constraints: providerAnalysis.constraints.filter(
+          (constraint) => !constraint.id.startsWith("invented-"),
+        ),
+      },
+      migrationLog,
+    );
     const result = rankConversation(input, migrationLog.messages, DEFAULT_WEIGHTS);
 
     expect(input.taskBoundaries).toEqual([]);
-    expect(input.constraintRules.map((constraint) => constraint.id)).not.toEqual(
-      expect.arrayContaining(["invented-coverage", "invented-metadata"]),
-    );
     expect(result.ranking[0].id).toBe("management-slides-for-the-customer-name-migration");
     expect(result.activeConstraints).toEqual(
       expect.arrayContaining([
@@ -522,5 +735,32 @@ describe("normalizeProviderAnalysis", () => {
       ]),
     );
     expect(result.reframes.every((event) => event.kind === "constraint-change")).toBe(true);
+  });
+
+  it("rejects a constraint whose label and canonical identity invent source meaning", () => {
+    expect(() =>
+      normalizeProviderAnalysis(
+        {
+          ...validAnalysis,
+          interpretations: validAnalysis.interpretations.map((candidate, index) =>
+            index === 0
+              ? { ...candidate, features: [...candidate.features, "coverage:none"] }
+              : candidate,
+          ),
+          constraints: [
+            {
+              id: "invented-coverage",
+              phrases: ["Send raw rows as CSV"],
+              dimension: "coverage",
+              value: "none",
+              mode: "require",
+              strength: 1,
+              label: "Omit all migration coverage",
+            },
+          ],
+        },
+        log,
+      ),
+    ).toThrow(/label and canonical identity are not grounded/i);
   });
 });

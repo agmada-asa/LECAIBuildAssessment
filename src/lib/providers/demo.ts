@@ -160,7 +160,7 @@ export function analyseWithDemo(log: ConversationLog): ProviderAnalysis {
     taskBoundaries: [],
     conversationAssessment: {
       kind: "actionable-task",
-      summary: "The deterministic fixture found multiple explicit source tasks.",
+      summary: "The deterministic test provider found multiple explicit source tasks.",
       evidenceMessageIds: grounded.map(({ message }) => message.id),
       knownFacts: grounded.map(({ task }) => task),
       unknowns: [],

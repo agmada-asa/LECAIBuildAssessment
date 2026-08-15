@@ -31,7 +31,7 @@ const historicalTaskSchema = z.object({
 
 /** Validates a prior server-produced input before it is reused for comparisons. */
 export const rankingInputSchema = z.object({
-  interpretations: z.array(interpretationSchema).min(3).max(5),
+  interpretations: z.array(interpretationSchema).min(1).max(5),
   constraintRules: z.array(constraintRuleSchema),
   history: z.array(historicalTaskSchema),
   taskBoundaries: z
