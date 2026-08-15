@@ -5,13 +5,15 @@
 
 import "@testing-library/jest-dom/vitest";
 
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { IntentRanker } from "@/components/intent-ranker";
+import { TaskSidebar } from "@/components/intent-ranker/task-sidebar";
 import { rankConversation } from "@/lib/ranking/engine";
-import { DEFAULT_WEIGHTS, getScenario } from "@/lib/ranking/scenarios";
+import { DEFAULT_WEIGHTS } from "@/lib/ranking/policy";
+import { getScenario } from "@/lib/ranking/test-scenarios";
 
 describe("conversation navigation", () => {
   beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }));
@@ -20,6 +22,61 @@ describe("conversation navigation", () => {
     cleanup();
     vi.unstubAllGlobals();
     vi.useRealTimers();
+  });
+
+  it("automatically processes pending work while monitoring the queue", async () => {
+    const scenario = getScenario("finance-reframe");
+    const conversation = {
+      conversationId: "queued-auto",
+      userId: "queue-user",
+      messages: scenario.messages,
+      acceptedOutcomes: [],
+    };
+    const pendingTask = {
+      id: "task-auto",
+      externalConversationId: conversation.conversationId,
+      revision: 1,
+      state: "pending" as const,
+      attempts: 0,
+      request: { ownerId: "owner-1", provider: "api" as const, conversation },
+      createdAt: "2026-08-14T09:00:00.000Z",
+      updatedAt: "2026-08-14T09:00:00.000Z",
+    };
+    const completedTask = {
+      ...pendingTask,
+      state: "decided" as const,
+      attempts: 1,
+      result: {
+        provider: { id: "api" as const, name: "API", fallback: false, notes: "Done." },
+        input: scenario,
+        result: rankConversation(scenario, conversation.messages, DEFAULT_WEIGHTS),
+        persistence: { enabled: true, identified: true, state: "decided" as const },
+      },
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/queue/process" && init?.method === "POST") {
+        return new Response(JSON.stringify({ tasks: [completedTask] }));
+      }
+      if (String(input) === "/api/queue") {
+        return new Response(JSON.stringify({ tasks: [pendingTask] }));
+      }
+      return new Response(null, { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <TaskSidebar
+        refreshKey="initial"
+        onSelectConversation={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/queue/process",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
   });
 
   it("opens a completed queue conversation in the workbench", async () => {

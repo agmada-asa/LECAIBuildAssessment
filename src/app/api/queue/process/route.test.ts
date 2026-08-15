@@ -59,7 +59,7 @@ describe("POST /api/queue/process", () => {
           messages: [],
           acceptedOutcomes: [],
         },
-      })).rejects.toThrow(/rate limit or capacity limit/i);
+      }, { id: "task-1", revision: 2 })).rejects.toThrow(/rate limit or capacity limit/i);
       return [];
     });
 
@@ -73,5 +73,9 @@ describe("POST /api/queue/process", () => {
     }));
 
     expect(response.status).toBe(200);
+    const forwarded = rankConversation.mock.calls[0][0] as Request;
+    await expect(forwarded.json()).resolves.toMatchObject({
+      queuedTask: { id: "task-1", revision: 2 },
+    });
   });
 });

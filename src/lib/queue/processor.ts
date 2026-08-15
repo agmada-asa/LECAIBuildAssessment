@@ -8,6 +8,7 @@
 import type {
   QueueRankingRequest,
   QueueRankingResult,
+  QueuedTaskReference,
   RankingRepository,
 } from "@/lib/persistence/types";
 
@@ -19,6 +20,7 @@ export type QueueProcessorResult = {
 
 export type RankQueuedConversation = (
   request: QueueRankingRequest,
+  task: QueuedTaskReference,
 ) => Promise<QueueRankingResult>;
 
 /** Claims and processes at most one bounded batch for a single owner. */
@@ -35,7 +37,10 @@ export async function processQueuedTasks(
 
   for (const claim of claims) {
     try {
-      const result = await rank(claim.request);
+      const result = await rank(claim.request, {
+        id: claim.id,
+        revision: claim.revision,
+      });
       const committed = await repository.completeRankingTask(claim, result);
       processed.push({
         taskId: claim.id,

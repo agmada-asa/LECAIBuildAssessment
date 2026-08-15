@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { processQueuedTasks } from "@/lib/queue/processor";
 import { rankingRunIdempotencyKey } from "@/lib/persistence/queue-reconciliation";
-import { DEFAULT_WEIGHTS } from "@/lib/ranking/scenarios";
+import { DEFAULT_WEIGHTS } from "@/lib/ranking/policy";
 import { SQLiteRankingRepository } from "./sqlite";
 import type { QueueRankingRequest, QueueRankingResult } from "./types";
 

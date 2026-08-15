@@ -40,7 +40,7 @@ export async function POST(request: Request) {
   const processed = await processQueuedTasks(
     repository,
     ownerId,
-    async (queued) => {
+    async (queued, queuedTask) => {
       const rankRequest = new Request("http://localhost/api/rank", {
         method: "POST",
         headers: {
@@ -51,7 +51,7 @@ export async function POST(request: Request) {
           provider: queued.provider,
           conversation: queued.conversation,
           weights: queued.weights,
-          previousInput: queued.previousInput,
+          queuedTask,
         }),
       });
       const response = await rankConversation(rankRequest);

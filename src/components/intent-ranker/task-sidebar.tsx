@@ -1,6 +1,6 @@
 /** @file Responsive task navigation with compact status indicators and recovery controls. */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -69,6 +69,7 @@ export function TaskSidebar({
   const [tasks, setTasks] = useState<QueuedRankingTask[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const automaticProcessActive = useRef(false);
 
   /** Fetches the current browser owner's reconciled queue without changing UI state. */
   const fetchTasks = useCallback(async (signal?: AbortSignal): Promise<QueuedRankingTask[]> => {
@@ -83,6 +84,30 @@ export function TaskSidebar({
     if (!response.ok) throw new Error(body.error ?? "Tasks are unavailable.");
     return body.tasks ?? [];
   }, []);
+
+  /** Runs one bounded worker pass and returns the resulting queue snapshot. */
+  const processWaitingTasks = useCallback(
+    async (limit = 5, signal?: AbortSignal): Promise<QueuedRankingTask[]> => {
+      const response = await fetch("/api/queue/process", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          [DEVICE_ID_HEADER]: getOrCreateDeviceId(),
+        },
+        body: JSON.stringify({ limit }),
+        signal,
+      });
+      const body = (await response.json()) as {
+        tasks?: QueuedRankingTask[];
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(body.error ?? "Waiting tasks could not be resumed.");
+      }
+      return body.tasks ?? [];
+    },
+    [],
+  );
 
   useEffect(() => {
     const controller = new AbortController();
@@ -101,6 +126,31 @@ export function TaskSidebar({
   const hasActiveTasks = tasks.some(
     (task) => task.state === "pending" || task.state === "processing",
   );
+  const pendingTaskKey = tasks
+    .filter((task) => task.state === "pending")
+    .map((task) => `${task.id}:${task.revision}`)
+    .join("|");
+
+  useEffect(() => {
+    if (!pendingTaskKey || processingConversationId || automaticProcessActive.current) return;
+
+    const controller = new AbortController();
+    automaticProcessActive.current = true;
+    processWaitingTasks(5, controller.signal)
+      .then((nextTasks) => {
+        setTasks(nextTasks);
+        setError("");
+      })
+      .catch((caught: unknown) => {
+        if (caught instanceof DOMException && caught.name === "AbortError") return;
+        setError(caught instanceof Error ? caught.message : "Waiting tasks could not be resumed.");
+      })
+      .finally(() => {
+        automaticProcessActive.current = false;
+      });
+
+    return () => controller.abort();
+  }, [pendingTaskKey, processWaitingTasks, processingConversationId]);
 
   useEffect(() => {
     if (!hasActiveTasks) return;
@@ -150,20 +200,7 @@ export function TaskSidebar({
     setLoading(true);
     setError("");
     try {
-      const response = await fetch("/api/queue/process", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          [DEVICE_ID_HEADER]: getOrCreateDeviceId(),
-        },
-        body: JSON.stringify({ limit }),
-      });
-      const body = (await response.json()) as {
-        tasks?: QueuedRankingTask[];
-        error?: string;
-      };
-      if (!response.ok) throw new Error(body.error ?? "Waiting tasks could not be resumed.");
-      setTasks(body.tasks ?? []);
+      setTasks(await processWaitingTasks(limit));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Waiting tasks could not be resumed.");
     } finally {
