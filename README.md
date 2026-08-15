@@ -52,7 +52,8 @@ JSON / CSV / TXT
   -> accepted/corrected outcome becomes scoped future history
 ```
 
-See [architecture](docs/ARCHITECTURE.md) for boundaries and invariants.
+See [architecture](docs/ARCHITECTURE.md) for boundaries and invariants and
+[system overview](docs/SYSTEM_OVERVIEW.md) for an end-to-end explanation.
 
 ## Clean install
 
@@ -90,9 +91,6 @@ pnpm start
 ```
 
 SQLite defaults to `data/resolve.sqlite`; the directory is created on first use.
-This repository does not ship Supabase, pgvector, hosted migrations, or RLS.
-A shared deployment would require authenticated tenancy and a production data
-store; do not treat the browser device ID as authorization.
 
 ## Import formats
 
@@ -124,14 +122,12 @@ Write the proposal,2026-08-14T09:00:00Z,user
 No dashboard yet,2026-08-14T09:01:00Z,user
 ```
 
-TXT uses one message per non-empty line and does not interpret colon-prefixed
-labels. TXT lines, JSON entries, and CSV rows receive stable `M1`, `M2` IDs in
-source order; supplied IDs are ignored so repeated labels cannot invalidate an
-import. Missing times are normalized for the canonical contract but displayed
-as “time unavailable,” never as a real year-2000 timestamp. Role-less messages
-are intentionally treated as task context; when authors are present in JSON or
-CSV, assistant/system/tool/developer text is not scored as a new user
-instruction.
+TXT lines, JSON entries, and CSV rows receive stable `M1`, `M2` IDs in source
+order; supplied IDs are ignored so repeated labels cannot invalidate an import.
+Missing times are normalized for the canonical contract but displayed as “time
+unavailable,” never as a real year-2000 timestamp. Role-less messages are
+intentionally treated as task context; when authors are present in JSON or CSV,
+assistant/system/tool/developer text is not scored as a new user instruction.
 
 ## Configuration
 
@@ -258,8 +254,7 @@ matched source phrase rather than a provider-written label.
 
 Production uses the configured API model `openai/text-embedding-3-small`
 (1,536 dimensions, configured 8,191-token limit). It does not fall back when the
-API fails. The measured ablation and cost/privacy/deployment trade-offs are in
-[the embedding report](src/evaluation/EMBEDDING_REPORT.md).
+API fails.
 
 The 22-case fixed-catalogue scorer set records 22/22 winner and review decisions
 with the deterministic test oracle. The credentialed trained-model run measured

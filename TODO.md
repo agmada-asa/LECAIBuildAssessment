@@ -469,7 +469,8 @@ the same pipeline:
 - [x] Rewrite the README opening around what actually works.
 - [x] Document the complete log-to-ranking data flow.
 - [x] Document CSV, JSON, and TXT import formats.
-- [x] Document Supabase setup and migrations.
+- [x] Document that this local assessment ships SQLite, not Supabase setup or
+  hosted migrations.
 - [x] Document every environment variable.
 - [x] Document embedding model selection and fallback behavior.
 - [x] Explain scoring weights and uncertainty thresholds.
