@@ -1,9 +1,8 @@
-/** @file Conversation transcript, fixture progression, and follow-up controls. */
+/** @file Imported conversation transcript and follow-up controls. */
 
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   ArrowRight01Icon,
-  PlayIcon,
   Refresh01Icon,
   UserIcon,
 } from "@hugeicons/core-free-icons";
@@ -16,40 +15,40 @@ import type { ConversationMessage } from "@/lib/ranking/types";
 
 export type ConversationPanelProps = {
   messages: ConversationMessage[];
-  totalFixtureMessages: number;
   userName: string;
   userRole: string;
   isProcessing: boolean;
   customMessage: string;
   onCustomMessageChange: (value: string) => void;
   onAddCustomMessage: () => void;
-  onProcessNext: () => void;
   onReset: () => void;
 };
+
+/** Formats imported timestamps without presenting parser placeholders as real dates. */
+function messageTime(timestamp: string, index: number): string {
+  return timestamp.startsWith("2000-01-01T00:")
+    ? `Message ${index + 1} · time unavailable`
+    : timestamp;
+}
 
 /** Shows the exact conversational evidence processed so far. */
 export function ConversationPanel({
   messages,
-  totalFixtureMessages,
   userName,
   userRole,
   isProcessing,
   customMessage,
   onCustomMessageChange,
   onAddCustomMessage,
-  onProcessNext,
   onReset,
 }: ConversationPanelProps) {
-  const fixtureMessagesRead = Math.min(messages.length, totalFixtureMessages);
-  const canProcessFixture = fixtureMessagesRead < totalFixtureMessages;
-
   return (
-    <section className="flex min-h-[580px] flex-col overflow-hidden rounded-2xl border bg-card shadow-sm xl:h-[calc(100vh-104px)]">
+    <section className="order-3 flex min-h-[480px] max-h-[70vh] flex-col overflow-hidden rounded-2xl border bg-card shadow-sm xl:order-1 xl:h-[calc(100vh-104px)] xl:max-h-none">
       <div className="border-b px-5 py-4">
         <div className="flex items-center justify-between gap-3">
           <h2 className="font-heading text-base font-semibold">Conversation</h2>
-          <Badge variant="secondary" className="rounded-full px-2.5 font-mono text-[10px]">
-            {fixtureMessagesRead}/{totalFixtureMessages} read
+          <Badge variant="secondary" className="rounded-full px-2.5 font-mono text-xs">
+            {messages.length} messages
           </Badge>
         </div>
 
@@ -72,12 +71,12 @@ export function ConversationPanel({
               className="animate-in fade-in slide-in-from-bottom-2 duration-300"
             >
               <div className="mb-1.5 flex items-center gap-2 px-1">
-                <span className="font-mono text-[10px] font-semibold text-muted-foreground">
+                <span className="font-mono text-xs font-semibold text-muted-foreground">
                   {message.id}
                 </span>
-                <span className="text-[10px] text-muted-foreground/70">{message.timestamp}</span>
+                <span className="text-xs text-muted-foreground/70">{messageTime(message.timestamp, index)}</span>
                 {index === messages.length - 1 && (
-                  <Badge className="ml-auto h-5 rounded-full bg-primary/10 px-2 text-[9px] text-primary shadow-none">
+                  <Badge className="ml-auto h-5 rounded-full bg-primary/10 px-2 text-xs text-primary shadow-none">
                     Latest
                   </Badge>
                 )}
@@ -110,51 +109,44 @@ export function ConversationPanel({
       </ScrollArea>
 
       <div className="space-y-3 border-t bg-muted/20 p-4">
-        {canProcessFixture ? (
-          <Button className="w-full rounded-xl" onClick={onProcessNext} disabled={isProcessing}>
-            <HugeiconsIcon icon={PlayIcon} className="size-4" strokeWidth={2} />
-            Process next message
-          </Button>
-        ) : (
-          <div className="relative">
-            <Textarea
-              aria-label="Add a follow-up message"
-              value={customMessage}
-              onChange={(event) => onCustomMessageChange(event.target.value)}
-              onKeyDown={(event) => {
-                if (
-                  event.key !== "Enter" ||
-                  event.shiftKey ||
-                  event.nativeEvent.isComposing ||
-                  isProcessing ||
-                  !customMessage.trim()
-                ) {
-                  return;
-                }
+        <div className="relative">
+          <Textarea
+            aria-label="Add a follow-up message"
+            value={customMessage}
+            onChange={(event) => onCustomMessageChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (
+                event.key !== "Enter" ||
+                event.shiftKey ||
+                event.nativeEvent.isComposing ||
+                isProcessing ||
+                !customMessage.trim()
+              ) {
+                return;
+              }
 
-                // Plain Enter sends; Shift+Enter remains available for multiline messages.
-                event.preventDefault();
-                onAddCustomMessage();
-              }}
-              disabled={isProcessing}
-              placeholder="Add a follow-up to test the ranking…"
-              className="min-h-20 resize-none rounded-xl bg-background pr-12 text-xs"
-            />
-            <Button
-              aria-label="Add follow-up message"
-              size="icon"
-              className="absolute right-2 bottom-2 size-8 rounded-lg"
-              onClick={onAddCustomMessage}
-              disabled={isProcessing || !customMessage.trim()}
-            >
-              <HugeiconsIcon icon={ArrowRight01Icon} className="size-4" strokeWidth={2} />
-            </Button>
-          </div>
-        )}
+              // Plain Enter sends; Shift+Enter remains available for multiline messages.
+              event.preventDefault();
+              onAddCustomMessage();
+            }}
+            disabled={isProcessing}
+            placeholder="Add a follow-up to test the ranking…"
+            className="min-h-20 resize-none rounded-xl bg-background pr-12 text-xs"
+          />
+          <Button
+            aria-label="Add follow-up message"
+            size="icon"
+            className="absolute right-2 bottom-2 size-8 rounded-lg"
+            onClick={onAddCustomMessage}
+            disabled={isProcessing || !customMessage.trim()}
+          >
+            <HugeiconsIcon icon={ArrowRight01Icon} className="size-4" strokeWidth={2} />
+          </Button>
+        </div>
         <button
           type="button"
           onClick={onReset}
-          className="flex w-full items-center justify-center gap-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+          className="flex w-full cursor-pointer items-center justify-center gap-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2"
         >
           <HugeiconsIcon icon={Refresh01Icon} className="size-3.5" strokeWidth={2} />
           Reset conversation

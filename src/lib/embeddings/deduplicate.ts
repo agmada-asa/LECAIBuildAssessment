@@ -59,6 +59,7 @@ export async function consolidateSemanticDuplicates(
 
   candidates.forEach((candidate, index) => {
     const duplicateIndex = kept.findIndex((existing, keptIndex) => {
+      if ((existing.kind ?? "task") !== (candidate.kind ?? "task")) return false;
       if (haveCanonicalConflict(existing, candidate)) return false;
       const lexical = tokenOverlap(inputs[keptIndexes[keptIndex]], inputs[index]);
       const cosine = cosineSimilarityForModel(

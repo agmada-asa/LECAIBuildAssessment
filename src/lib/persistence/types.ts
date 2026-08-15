@@ -101,25 +101,53 @@ export type QueuedRankingTask = {
   updatedAt: string;
 };
 
+/** Stable queue identity supplied by a client that already enqueued the work. */
+export type QueuedTaskReference = Pick<QueuedRankingTask, "id" | "revision">;
+
 /** Lease-bound claim; revision and token make completion compare-and-swap safe. */
 export type QueuedRankingClaim = QueuedRankingTask & { leaseToken: string };
 
 /** Persistence operations consumed by the ranking and feedback routes. */
 export interface RankingRepository {
   persistRankingRun(run: PersistedRankingRun): Promise<PersistedRunReference>;
+  /** Stores feedback while retaining at most one active acceptance per source run. */
   storeOutcome(outcome: StoredTaskOutcome): Promise<void>;
+  /** Resolves one owned human-review run and its exact queue snapshot. */
+  resolveRankingReview(ownerId: string, rankingRunId: string): Promise<boolean>;
   findSimilarOutcomes(query: SimilarOutcomeQuery): Promise<SimilarTaskOutcome[]>;
-  rankingRunBelongsToUser(rankingRunId: string, ownerId: string): Promise<boolean>;
+  /** Loads one exact run only when it belongs to the requesting owner. */
+  rankingRunForOwner(
+    rankingRunId: string,
+    ownerId: string,
+  ): Promise<PersistedRankingRun | undefined>;
   latestRankingState(ownerId: string): Promise<StoredRankingState | undefined>;
   archiveLatestRankingState(ownerId: string): Promise<boolean>;
   enqueueRankingTask(request: QueueRankingRequest): Promise<QueuedRankingTask>;
   listRankingTasks(ownerId: string): Promise<QueuedRankingTask[]>;
+  /** Loads one exact queued revision only when it belongs to the requesting owner. */
+  rankingTaskForOwner(
+    ownerId: string,
+    task: QueuedTaskReference,
+  ): Promise<QueuedRankingTask | undefined>;
+  /** Repairs legacy pending tasks only when an exact persisted run exists. */
+  reconcilePendingRankingTasks(ownerId: string): Promise<number>;
+  /** Renames one owned conversation across queue and persisted ranking history. */
+  renameConversation(
+    ownerId: string,
+    currentConversationId: string,
+    nextConversationId: string,
+  ): Promise<boolean>;
   claimRankingTasks(
     ownerId: string,
     limit: number,
     options?: { leaseDurationMs?: number },
   ): Promise<QueuedRankingClaim[]>;
   completeRankingTask(claim: QueuedRankingClaim, result: QueueRankingResult): Promise<boolean>;
+  completePendingRankingTask(
+    ownerId: string,
+    task: QueuedTaskReference,
+    result: QueueRankingResult,
+  ): Promise<boolean>;
   failRankingTask(claim: QueuedRankingClaim, message: string): Promise<boolean>;
   retryRankingTask(ownerId: string, taskId: string): Promise<boolean>;
 }

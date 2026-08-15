@@ -150,6 +150,7 @@ export function analyseWithDemo(log: ConversationLog): ProviderAnalysis {
   return {
     interpretations: grounded.map(({ message, task }) => ({
       id: `grounded-${message.id}`,
+      kind: "task" as const,
       title: task.slice(0, 200),
       summary: `Task stated in ${message.id}: ${task}`,
       semanticTerms: semanticTerms(task),
@@ -157,6 +158,13 @@ export function analyseWithDemo(log: ConversationLog): ProviderAnalysis {
     })),
     constraints,
     taskBoundaries: [],
+    conversationAssessment: {
+      kind: "actionable-task",
+      summary: "The deterministic test provider found multiple explicit source tasks.",
+      evidenceMessageIds: grounded.map(({ message }) => message.id),
+      knownFacts: grounded.map(({ task }) => task),
+      unknowns: [],
+    },
     notes: "Deterministic fallback: every candidate is copied from a distinct source task.",
   };
 }

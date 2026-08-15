@@ -6,6 +6,11 @@
  */
 
 import { cosineSimilarity } from "@/lib/embeddings/similarity";
+import { DEFAULT_WEIGHTS } from "@/lib/ranking/policy";
+import {
+  queueResultFromPersistedRun,
+  rankingRunIdempotencyKey,
+} from "./queue-reconciliation";
 import type {
   PersistedRankingRun,
   PersistedRunReference,
@@ -86,7 +91,44 @@ export class InMemoryRankingRepository implements RankingRepository {
 
   /** Inserts or replaces an outcome by stable outcome ID. */
   async storeOutcome(outcome: StoredTaskOutcome): Promise<void> {
+    if (outcome.accepted && outcome.sourceRankingRunId) {
+      // One ranking run represents one user decision. Retain earlier feedback
+      // for auditability, but prevent it from contributing positive history.
+      this.outcomes.forEach((existing) => {
+        if (
+          existing.ownerId === outcome.ownerId &&
+          existing.sourceRankingRunId === outcome.sourceRankingRunId &&
+          existing.id !== outcome.id &&
+          existing.accepted
+        ) {
+          existing.accepted = false;
+        }
+      });
+    }
     this.outcomes.set(outcome.id, { ...outcome, embedding: [...outcome.embedding] });
+  }
+
+  /** Marks an owned reviewed run and only its corresponding queued result decided. */
+  async resolveRankingReview(ownerId: string, rankingRunId: string): Promise<boolean> {
+    const reference = [...this.runs.values()].find((run) => run.id === rankingRunId);
+    const conversation = reference
+      ? [...this.conversations.values()].find(
+          (item) => item.id === reference.conversationId && item.ownerId === ownerId,
+        )
+      : undefined;
+    if (!reference || !conversation) return false;
+
+    reference.state = "decided";
+    const task = [...this.queue.values()].find(
+      (item) =>
+        item.request.ownerId === ownerId &&
+        item.result?.persistence.rankingRunId === rankingRunId,
+    );
+    if (task?.state === "human_review") {
+      task.state = "decided";
+      task.updatedAt = new Date().toISOString();
+    }
+    return true;
   }
 
   /** Applies strict user/domain/model filters before cosine ordering. */
@@ -111,18 +153,21 @@ export class InMemoryRankingRepository implements RankingRepository {
       .slice(0, query.limit);
   }
 
-  /** Confirms ownership through the run's stored conversation. */
-  async rankingRunBelongsToUser(
+  /** Loads an exact run only when its stored conversation belongs to the owner. */
+  async rankingRunForOwner(
     rankingRunId: string,
     ownerId: string,
-  ): Promise<boolean> {
+  ): Promise<PersistedRankingRun | undefined> {
     const run = [...this.runs.values()].find((item) => item.id === rankingRunId);
     const conversation = run
       ? [...this.conversations.values()].find(
           (item) => item.id === run.conversationId,
         )
       : undefined;
-    return conversation?.ownerId === ownerId;
+    const payload = conversation?.ownerId === ownerId
+      ? this.runPayloads.get(rankingRunId)
+      : undefined;
+    return payload ? structuredClone(payload) : undefined;
   }
 
   /** Returns the most recently inserted run for one user. */
@@ -196,6 +241,81 @@ export class InMemoryRankingRepository implements RankingRepository {
       .map((task) => structuredClone(task));
   }
 
+  /** Loads an immutable copy of one owner-scoped queue revision. */
+  async rankingTaskForOwner(
+    ownerId: string,
+    reference: Pick<QueuedRankingTask, "id" | "revision">,
+  ): Promise<QueuedRankingTask | undefined> {
+    const task = [...this.queue.values()].find(
+      (item) =>
+        item.id === reference.id &&
+        item.revision === reference.revision &&
+        item.request.ownerId === ownerId,
+    );
+    return task ? structuredClone(task) : undefined;
+  }
+
+  /** Repairs pre-fix pending tasks from exact owner-scoped persisted runs. */
+  async reconcilePendingRankingTasks(ownerId: string): Promise<number> {
+    let reconciled = 0;
+    for (const task of this.queue.values()) {
+      if (task.request.ownerId !== ownerId || task.state !== "pending") continue;
+      const idempotencyKey = rankingRunIdempotencyKey({
+        provider: task.request.provider,
+        conversation: task.request.conversation,
+        weights: task.request.weights ?? DEFAULT_WEIGHTS,
+      });
+      const stored = [...this.runPayloads.entries()].find(
+        ([, run]) => run.ownerId === ownerId && run.idempotencyKey === idempotencyKey,
+      );
+      if (!stored) continue;
+      const [runId, run] = stored;
+      const reference = [...this.runs.values()].find((item) => item.id === runId);
+      if (!reference) continue;
+      const completed = await this.completePendingRankingTask(
+        ownerId,
+        { id: task.id, revision: task.revision },
+        queueResultFromPersistedRun(run, reference),
+      );
+      if (completed) reconciled += 1;
+    }
+    return reconciled;
+  }
+
+  /** Renames queue and stored run snapshots while retaining their stable IDs. */
+  async renameConversation(
+    ownerId: string,
+    currentConversationId: string,
+    nextConversationId: string,
+  ): Promise<boolean> {
+    const currentKey = `${ownerId}:${currentConversationId}`;
+    const nextKey = `${ownerId}:${nextConversationId}`;
+    const conversation = this.conversations.get(currentKey);
+    const queuedTask = this.queue.get(currentKey);
+    if ((!conversation && !queuedTask) || this.conversations.has(nextKey) || this.queue.has(nextKey)) {
+      return false;
+    }
+
+    if (conversation) {
+      this.conversations.delete(currentKey);
+      conversation.externalId = nextConversationId;
+      this.conversations.set(nextKey, conversation);
+    }
+    if (queuedTask) {
+      this.queue.delete(currentKey);
+      queuedTask.externalConversationId = nextConversationId;
+      queuedTask.request.conversation.conversationId = nextConversationId;
+      queuedTask.updatedAt = new Date().toISOString();
+      this.queue.set(nextKey, queuedTask);
+    }
+    for (const run of this.runPayloads.values()) {
+      if (run.ownerId === ownerId && run.conversation.conversationId === currentConversationId) {
+        run.conversation.conversationId = nextConversationId;
+      }
+    }
+    return true;
+  }
+
   /** Leases pending or expired tasks for a bounded worker pass. */
   async claimRankingTasks(
     ownerId: string,
@@ -230,6 +350,27 @@ export class InMemoryRankingRepository implements RankingRepository {
     task.error = undefined;
     task.updatedAt = new Date().toISOString();
     this.queueLeases.delete(task.id);
+    return true;
+  }
+
+  /** Commits a direct result only to the pending revision named by the client. */
+  async completePendingRankingTask(
+    ownerId: string,
+    reference: Pick<QueuedRankingTask, "id" | "revision">,
+    result: QueueRankingResult,
+  ): Promise<boolean> {
+    const task = [...this.queue.values()].find(
+      (item) =>
+        item.id === reference.id &&
+        item.revision === reference.revision &&
+        item.request.ownerId === ownerId &&
+        item.state === "pending",
+    );
+    if (!task) return false;
+    task.state = result.result.uncertain ? "human_review" : "decided";
+    task.result = structuredClone(result);
+    task.error = undefined;
+    task.updatedAt = new Date().toISOString();
     return true;
   }
 

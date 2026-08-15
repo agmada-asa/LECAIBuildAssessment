@@ -2,15 +2,14 @@
 
 import type { ConversationLog } from "@/lib/conversations/schema";
 import type { ProviderId } from "@/lib/providers/types";
-import type { RankErrorResponse, RankSuccessResponse } from "@/lib/ranking/api";
+import type { RankSuccessResponse } from "@/lib/ranking/api";
 import type {
   ConversationMessage,
-  RankingInput,
-  Scenario,
   SignalKey,
   SignalWeights,
 } from "@/lib/ranking/types";
 import { DEVICE_ID_HEADER, getOrCreateDeviceId } from "@/lib/persistence/device";
+import type { QueuedTaskReference } from "@/lib/persistence/types";
 
 export const SIGNAL_META: Record<
   SignalKey,
@@ -38,6 +37,9 @@ export const SIGNAL_META: Record<
 
 export const SIGNAL_KEYS = Object.keys(SIGNAL_META) as SignalKey[];
 
+/** Maximum time the interactive workbench waits for one complete analysis. */
+export const ANALYSIS_REQUEST_TIMEOUT_MS = 90_000;
+
 /** Formats a normalised value as a whole-number percentage for compact labels. */
 export function percentage(value: number): string {
   return `${Math.round(value * 100)}%`;
@@ -46,36 +48,6 @@ export function percentage(value: number): string {
 /** Formats a signed normalised score change as percentage points. */
 export function pointDelta(value: number): string {
   return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(1)} pts`;
-}
-
-/** Converts a walkthrough snapshot into the canonical log used by imports. */
-export function scenarioConversationLog(
-  scenario: Scenario,
-  messages: ConversationMessage[],
-): ConversationLog {
-  return {
-    conversationId: scenario.id,
-    userId: scenario.userName.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
-    domain: { name: scenario.userRole },
-    messages: messages.map((message, index) => ({
-      ...message,
-      timestamp: Number.isNaN(Date.parse(message.timestamp))
-        ? `2026-08-14T${message.timestamp}:00.000Z`
-        : new Date(message.timestamp).toISOString(),
-      id: message.id || `M${index + 1}`,
-    })),
-    acceptedOutcomes: scenario.history
-      .filter((outcome) => outcome.accepted)
-      .map((outcome) => ({
-        id: outcome.id,
-        interpretationId: outcome.interpretationId,
-        title:
-          scenario.interpretations.find((item) => item.id === outcome.interpretationId)
-            ?.title ?? "Accepted task",
-        summary: outcome.summary,
-        semanticTerms: outcome.terms,
-      })),
-  };
 }
 
 /** Returns the first generated ID that does not collide with source IDs. */
@@ -91,23 +63,59 @@ export async function requestRanking(
   conversation: ConversationLog,
   provider: ProviderId,
   weights: SignalWeights,
-  previousInput?: RankingInput,
   signal?: AbortSignal,
+  queuedTask?: QueuedTaskReference,
 ): Promise<RankSuccessResponse> {
-  const response = await fetch("/api/rank", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      [DEVICE_ID_HEADER]: getOrCreateDeviceId(),
-    },
-    body: JSON.stringify({ provider, conversation, weights, previousInput }),
-    signal,
-  });
-  const body = (await response.json()) as RankSuccessResponse | RankErrorResponse;
-  if (!response.ok || "error" in body) {
-    throw new Error(
-      "error" in body ? body.error.message : "The ranking service returned an invalid response.",
-    );
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, ANALYSIS_REQUEST_TIMEOUT_MS);
+  const abortFromCaller = () => controller.abort();
+  if (signal?.aborted) abortFromCaller();
+  else signal?.addEventListener("abort", abortFromCaller, { once: true });
+
+  try {
+    const response = await fetch("/api/rank", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        [DEVICE_ID_HEADER]: getOrCreateDeviceId(),
+      },
+      body: JSON.stringify({ provider, conversation, weights, queuedTask }),
+      signal: controller.signal,
+    });
+    const rawBody = (await response.json()) as unknown;
+    if (
+      !response.ok ||
+      (typeof rawBody === "object" &&
+        rawBody !== null &&
+        "error" in rawBody &&
+        Boolean((rawBody as { error: unknown }).error))
+    ) {
+      const errorPayload = (rawBody as { error?: unknown })?.error;
+      const message =
+        typeof errorPayload === "string"
+          ? errorPayload
+          : typeof errorPayload === "object" &&
+              errorPayload !== null &&
+              "message" in errorPayload &&
+              typeof (errorPayload as { message: unknown }).message === "string"
+            ? (errorPayload as { message: string }).message
+            : "The ranking service returned an invalid response.";
+      throw new Error(message);
+    }
+    return rawBody as RankSuccessResponse;
+  } catch (error) {
+    if (timedOut) {
+      throw new Error(
+        "Analysis took longer than 90 seconds. Try again or choose another provider.",
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener("abort", abortFromCaller);
   }
-  return body;
 }

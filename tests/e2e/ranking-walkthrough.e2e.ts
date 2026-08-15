@@ -1,6 +1,31 @@
-/** @file Browser walkthrough proving a late contradiction changes the visible winner. */
+/** @file Browser regressions for the shipped arbitrary-log workflow. */
 
 import { expect, test, type Page } from "@playwright/test";
+
+test.setTimeout(180_000);
+
+/** Keeps browser regressions deterministic while route tests cover live adapters. */
+async function installTestRankingBackend(page: Page) {
+  await page.route("**/api/queue", async (route) => {
+    if (route.request().method() === "POST") {
+      await route.fulfill({
+        status: 202,
+        contentType: "application/json",
+        body: JSON.stringify({}),
+      });
+      return;
+    }
+    await route.continue();
+  });
+  await page.route("**/api/rank", async (route) => {
+    const request = route.request();
+    const body = request.postDataJSON() as Record<string, unknown>;
+    const response = await route.fetch({
+      postData: JSON.stringify({ ...body, provider: "demo" }),
+    });
+    await route.fulfill({ response });
+  });
+}
 
 /** Imports one canonical JSON log through the same controls a reviewer uses. */
 async function analyzeLog(page: Page, log: unknown) {
@@ -8,30 +33,15 @@ async function analyzeLog(page: Page, log: unknown) {
   await page.getByRole("textbox", { name: "Paste conversation log" }).fill(JSON.stringify(log));
   await page.getByRole("button", { name: "Preview conversation" }).click();
   await page.getByRole("button", { name: /Analyze \d+ messages/ }).click();
-  await expect(page.getByRole("heading", { name: "Imported conversation" })).toBeVisible();
+  const conversationId = (log as { conversationId?: string }).conversationId;
+  if (conversationId) {
+    await expect(page.getByRole("heading", { name: conversationId })).toBeVisible({ timeout: 120_000 });
+  }
   await expect(page.getByRole("heading", { name: "Plausible readings" })).toBeVisible();
 }
 
-test("processes the finance contradiction from transcript to ranked explanation", async ({
-  page,
-}) => {
-  await page.goto("/");
-
-  await expect(page.getByRole("heading", { name: "Plausible readings" })).toBeVisible();
-  await expect(page.getByText("Create a client review deck", { exact: true })).toBeVisible();
-
-  await page.getByRole("button", { name: "Process next message" }).click();
-
-  await expect(page.getByText("Ranking shifted.")).toBeVisible();
-  await expect(page.getByText(/Export finance-ready CSV data.*moved from #3 to #1/)).toBeVisible();
-  const csvCard = page
-    .getByRole("button")
-    .filter({ hasText: "Export finance-ready CSV data" });
-  await expect(csvCard).toContainText("1");
-  await expect(csvCard).toContainText("relative confidence");
-});
-
-test("grounds every deterministic candidate in the dentist, flights, and apology tasks", async ({ page }) => {
+test("grounds every generated candidate in the dentist, flights, and apology tasks", async ({ page }) => {
+  await installTestRankingBackend(page);
   await page.goto("/");
   await analyzeLog(page, {
     conversationId: "open-set-browser",
@@ -52,6 +62,7 @@ test("grounds every deterministic candidate in the dentist, flights, and apology
 });
 
 test("keeps the resumed rate-limiting proposal in scope after deferred MCP questions", async ({ page }) => {
+  await installTestRankingBackend(page);
   await page.goto("/");
   await analyzeLog(page, {
     conversationId: "finance-follow-up-browser",

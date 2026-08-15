@@ -1,8 +1,8 @@
 /**
  * @file Optional HTTP boundary for structured live candidate extraction.
  *
- * The deterministic walkthrough does not call this route. Live requests are
- * validated here before crossing into the server-only CLI adapter.
+ * Requests are validated here before crossing into a server-only live-provider
+ * adapter.
  */
 
 import { NextResponse } from "next/server";
@@ -10,6 +10,7 @@ import { z } from "zod";
 
 import { analyseWithCodex } from "@/lib/providers/codex-exec";
 import { analyseWithOpenAICompatible } from "@/lib/providers/openai-compatible";
+import { ProviderRequestError } from "@/lib/providers/types";
 
 // The adapter uses Node child processes and cannot run in the Edge runtime.
 export const runtime = "nodejs";
@@ -27,25 +28,43 @@ const requestSchema = z.object({
  * redacted 502 response when the local provider fails.
  */
 export async function POST(request: Request) {
+  let json: unknown;
   try {
-    const input = requestSchema.parse(await request.json());
+    json = await request.json();
+  } catch {
+    return NextResponse.json(
+      { error: "Send a valid JSON request." },
+      { status: 400 },
+    );
+  }
+
+  const parsed = requestSchema.safeParse(json);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: "Enter a conversation between 10 and 20,000 characters." },
+      { status: 400 },
+    );
+  }
+
+  try {
+    const input = parsed.data;
     const analysis =
       input.provider === "codex"
         ? await analyseWithCodex(input.conversation)
         : await analyseWithOpenAICompatible(input.conversation);
     return NextResponse.json({ analysis });
   } catch (error) {
-    if (error instanceof z.ZodError) {
+    if (error instanceof SyntaxError || error instanceof z.ZodError) {
       return NextResponse.json(
-        { error: "Enter a conversation between 10 and 20,000 characters." },
-        { status: 400 },
+        { error: "The selected provider returned malformed structured output." },
+        { status: 502 },
       );
     }
 
-    if (error instanceof SyntaxError) {
+    if (error instanceof ProviderRequestError) {
       return NextResponse.json(
-        { error: "Send a valid JSON request." },
-        { status: 400 },
+        { error: error.message },
+        { status: error.status === 429 ? 429 : 502 },
       );
     }
 

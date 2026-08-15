@@ -140,6 +140,9 @@ describe("constraint scoring", () => {
 
     expect(constraintScore(input.interpretations[1], [constraint]).score).toBe(1);
     expect(constraintScore(input.interpretations[0], [constraint]).score).toBeLessThan(0.2);
+    expect(constraintScore(input.interpretations[1], [constraint]).evidence[0].text).toBe(
+      "Source: “CSV”",
+    );
   });
 
   it("only calls a prohibition supportive when the candidate explicitly excludes it", () => {

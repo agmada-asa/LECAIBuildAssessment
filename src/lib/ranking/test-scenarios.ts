@@ -1,44 +1,35 @@
 /**
- * @file Inspectable fixtures, scoring policies, and accepted-task history.
+ * @file Test-only conversational scenarios and accepted-task history.
  *
- * Fixtures make the assessment reproducible without credentials while still
- * exercising the production ranking engine rather than hard-coded outcomes.
+ * These records exercise the production ranking engine in automated tests.
+ * Runtime application code must never import this module.
  */
 
-import type { Scenario, SignalWeights } from "./types";
+import type {
+  ConstraintRule,
+  ConversationMessage,
+  HistoricalTask,
+  Interpretation,
+  RankingInput,
+} from "./types";
 
-/**
- * The system default intentionally prioritises explicit constraints. A current,
- * direct instruction should usually override linguistic resemblance or habit.
- */
-export const DEFAULT_WEIGHTS: SignalWeights = {
-  semantic: 30,
-  constraints: 50,
-  history: 20,
+type TestScenario = RankingInput & {
+  id: string;
+  title: string;
+  shortTitle: string;
+  description: string;
+  userName: string;
+  userRole: string;
+  messages: ConversationMessage[];
+  interpretations: Interpretation[];
+  constraintRules: ConstraintRule[];
+  history: HistoricalTask[];
 };
 
-export const WEIGHT_PRESETS: Record<
-  string,
-  { label: string; description: string; weights: SignalWeights }
-> = {
-  explicit: {
-    label: "Explicit instructions first",
-    description: "Current constraints override prior habits.",
-    weights: DEFAULT_WEIGHTS,
-  },
-  balanced: {
-    label: "Balanced",
-    description: "Treat all three evidence sources similarly.",
-    weights: { semantic: 35, constraints: 40, history: 25 },
-  },
-  history: {
-    label: "History-aware",
-    description: "Give recurring user patterns more influence.",
-    weights: { semantic: 30, constraints: 35, history: 35 },
-  },
-};
+// These curated conversations are test support only. Production code must not
+// import this module or expose a precomputed walkthrough result.
 
-const financeReframe: Scenario = {
+const financeReframe: TestScenario = {
   id: "finance-reframe",
   title: "The client review that became a data handoff",
   shortTitle: "Finance reframe",
@@ -226,7 +217,7 @@ const financeReframe: Scenario = {
   ],
 };
 
-const weeklyAmbiguity: Scenario = {
+const weeklyAmbiguity: TestScenario = {
   id: "weekly-ambiguity",
   title: "A weekly pulse with two equally plausible formats",
   shortTitle: "Weekly ambiguity",
@@ -385,7 +376,7 @@ const weeklyAmbiguity: Scenario = {
 
 export const SCENARIOS = [financeReframe, weeklyAmbiguity] as const;
 
-/** Returns a known fixture, falling back to the primary walkthrough scenario. */
-export function getScenario(id: string): Scenario {
+/** Returns known test data, falling back to the primary ranking regression. */
+export function getScenario(id: string): TestScenario {
   return SCENARIOS.find((scenario) => scenario.id === id) ?? SCENARIOS[0];
 }

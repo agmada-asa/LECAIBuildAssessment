@@ -6,6 +6,8 @@ const { repository } = vi.hoisted(() => ({
   repository: {
     enqueueRankingTask: vi.fn(),
     listRankingTasks: vi.fn(),
+    reconcilePendingRankingTasks: vi.fn(),
+    renameConversation: vi.fn(),
     retryRankingTask: vi.fn(),
   },
 }));
@@ -51,11 +53,13 @@ describe("/api/queue", () => {
   });
 
   it("lists only tasks belonging to the supplied device owner", async () => {
+    repository.reconcilePendingRankingTasks.mockResolvedValue(1);
     repository.listRankingTasks.mockResolvedValue([{ id: "task-1" }]);
     const response = await GET(request("GET"));
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ tasks: [{ id: "task-1" }] });
+    expect(repository.reconcilePendingRankingTasks).toHaveBeenCalledWith(ownerId);
     expect(repository.listRankingTasks).toHaveBeenCalledWith(ownerId);
   });
 
@@ -64,5 +68,21 @@ describe("/api/queue", () => {
     expect((await PATCH(request("PATCH", { taskId: "task-1" }))).status).toBe(200);
     expect(repository.retryRankingTask).toHaveBeenCalledWith(ownerId, "task-1");
     expect((await GET(request("GET", undefined, false))).status).toBe(401);
+  });
+
+  it("renames an owned conversation instead of treating it as a retry", async () => {
+    repository.renameConversation.mockResolvedValue(true);
+    const response = await PATCH(request("PATCH", {
+      currentConversationId: "conversation-1",
+      nextConversationId: "quarterly-review",
+    }));
+
+    expect(response.status).toBe(200);
+    expect(repository.renameConversation).toHaveBeenCalledWith(
+      ownerId,
+      "conversation-1",
+      "quarterly-review",
+    );
+    expect(repository.retryRankingTask).not.toHaveBeenCalled();
   });
 });

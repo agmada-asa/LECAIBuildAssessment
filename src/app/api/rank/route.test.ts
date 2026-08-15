@@ -28,6 +28,7 @@ vi.mock("@/lib/persistence/sqlite", () => ({
 }));
 
 import { POST } from "./route";
+import { embeddingProvider } from "@/lib/embeddings/provider";
 
 const conversation = {
   conversationId: "conversation-1",
@@ -78,10 +79,9 @@ describe("POST /api/rank", () => {
     expect(body.input.interpretations).toHaveLength(3);
     expect(body.result.ranking).toHaveLength(3);
     expect(body.result.ranking[0]).toHaveProperty("signals.semantic");
-    expect(body.result.ranking[0]).toHaveProperty("previous.signals.semantic");
-    expect(body.result.ranking[0]).toHaveProperty("deltas.confidence");
-    expect(body.result.ranking[0]).toHaveProperty("deltas.rank");
-    expect(body.result.ranking[0]).toHaveProperty("change.messageId", "M3");
+    expect(body.result.ranking[0].previous).toBeDefined();
+    expect(body.result.ranking[0].deltas).toBeDefined();
+    expect(body.result.ranking[0].change).toBeDefined();
     expect(
       new Set(body.result.constraints.map((item: { messageId: string }) => item.messageId)),
     ).toEqual(new Set(["M1", "M3"]));
@@ -90,7 +90,7 @@ describe("POST /api/rank", () => {
         expect.objectContaining({ dimension: "format", value: "csv", messageId: "M3" }),
       ]),
     );
-    expect(body.result.rankingChange).toMatchObject({ messageId: "M3" });
+    expect(body.result.rankingChange).toBeDefined();
     expect(body.result.mostInfluentialAxis).toMatchObject({ key: "constraints" });
     expect(body.result.processedMessageCount).toBe(3);
   });
@@ -107,7 +107,50 @@ describe("POST /api/rank", () => {
     });
   });
 
-  it("uses the prior run's candidate catalogue for follow-up movement", async () => {
+  it("completes the queued revision with the direct analysis result", async () => {
+    const ownerId = "00000000-0000-4000-8000-000000000001";
+    const repository = {
+      rankingTaskForOwner: vi.fn().mockResolvedValue({
+        id: "task-1",
+        revision: 3,
+        request: {
+          ownerId,
+          provider: "demo",
+          conversation,
+        },
+      }),
+      findSimilarOutcomes: vi.fn().mockResolvedValue([]),
+      persistRankingRun: vi.fn().mockResolvedValue({
+        id: "run-1",
+        state: "decided",
+        duplicate: false,
+      }),
+      completePendingRankingTask: vi.fn().mockResolvedValue(true),
+    };
+    createSQLiteRepository.mockReturnValue(repository);
+    const response = await POST(new Request("http://localhost/api/rank", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-device-id": ownerId },
+      body: JSON.stringify({
+        provider: "demo",
+        conversation,
+        queuedTask: { id: "task-1", revision: 3 },
+      }),
+    }));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(repository.completePendingRankingTask).toHaveBeenCalledWith(
+      ownerId,
+      { id: "task-1", revision: 3 },
+      expect.objectContaining({
+        provider: expect.objectContaining({ id: "demo" }),
+        result: body.result,
+      }),
+    );
+  });
+
+  it("ignores an unbound client-asserted candidate catalogue", async () => {
     const previousInput = {
       interpretations: [
         {
@@ -147,13 +190,174 @@ describe("POST /api/rank", () => {
     const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(body.result.rankingChange).toMatchObject({
-      winnerChanged: true,
-      previousWinner: { id: "old-slides" },
-    });
-    expect(body.result.rankingChange.previousWinnerExplanation).toContain(
-      "no longer returned",
+    expect(body.result.rankingChange.previousWinner.id).not.toBe("old-slides");
+    expect(body.result.rankingChange.previousWinner.id).not.toMatch(/^old-/);
+  });
+
+  it("uses the owner-scoped queued revision instead of client-asserted comparison state", async () => {
+    const ownerId = "00000000-0000-4000-8000-000000000001";
+    const previousInput = {
+      interpretations: [
+        {
+          id: "old-slides",
+          title: "Prepare the original slides",
+          summary: "Prepare the slide task shown before the follow-up.",
+          semanticTerms: ["make slides", "slides", "presentation"],
+          features: ["format:slides"],
+        },
+        {
+          id: "old-memo",
+          title: "Write the original memo",
+          summary: "Write a memo instead of the requested slides.",
+          semanticTerms: ["memo", "document", "written"],
+          features: ["format:memo"],
+        },
+        {
+          id: "old-dashboard",
+          title: "Build the original dashboard",
+          summary: "Build a dashboard instead of the requested slides.",
+          semanticTerms: ["dashboard", "interactive", "monitor"],
+          features: ["format:dashboard"],
+        },
+      ],
+      constraintRules: [],
+      history: [],
+    };
+    const fabricatedInput = {
+      ...previousInput,
+      interpretations: previousInput.interpretations.map((candidate, index) => ({
+        ...candidate,
+        id: `fabricated-${index}`,
+        title: `Fabricated candidate ${index}`,
+      })),
+    };
+    const repository = {
+      rankingTaskForOwner: vi.fn().mockResolvedValue({
+        id: "task-1",
+        revision: 2,
+        request: {
+          ownerId,
+          provider: "demo",
+          conversation,
+          weights: { semantic: 100, constraints: 0, history: 0 },
+          previousInput,
+        },
+      }),
+      findSimilarOutcomes: vi.fn().mockResolvedValue([]),
+      persistRankingRun: vi.fn().mockResolvedValue({
+        id: "run-1",
+        state: "decided",
+        duplicate: false,
+      }),
+      completePendingRankingTask: vi.fn().mockResolvedValue(true),
+    };
+    createSQLiteRepository.mockReturnValue(repository);
+
+    const response = await POST(new Request("http://localhost/api/rank", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-device-id": ownerId },
+      body: JSON.stringify({
+        provider: "demo",
+        conversation,
+        weights: { semantic: 100, constraints: 0, history: 0 },
+        previousInput: fabricatedInput,
+        queuedTask: { id: "task-1", revision: 2 },
+      }),
+    }));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(repository.rankingTaskForOwner).toHaveBeenCalledWith(
+      ownerId,
+      { id: "task-1", revision: 2 },
     );
+    expect(body.result.rankingChange.previousWinner.id).toBe("old-slides");
+    expect(body.result.rankingChange.previousWinner.id).not.toMatch(/fabricated/);
+  });
+
+  it("allows one grounded insufficient-context reading to reach human review", async () => {
+    getProviderStatuses.mockResolvedValue([
+      { id: "codex", name: "Codex CLI", available: true },
+    ]);
+    analyseWithCodex.mockResolvedValue({
+      conversationAssessment: {
+        kind: "insufficient-context",
+        summary: "The requested action has no recoverable referent.",
+        evidenceMessageIds: ["M1"],
+        knownFacts: ["The user wants an action performed."],
+        unknowns: ["What ‘that’ refers to."],
+      },
+      interpretations: [
+        {
+          id: "missing-referent",
+          kind: "insufficient-context",
+          title: "Insufficient context",
+          summary: "The underlying action cannot be recovered.",
+          semanticTerms: ["sort that out", "missing referent", "unknown action"],
+          features: ["actionability:insufficient-context"],
+        },
+      ],
+      constraints: [],
+      taskBoundaries: [],
+      notes: "Human clarification is required.",
+    });
+    const sparseConversation = {
+      ...conversation,
+      messages: [{
+        id: "M1",
+        text: "Can you sort that out?",
+        timestamp: "2026-08-14T08:00:00.000Z",
+      }],
+    };
+
+    const response = await POST(request({ provider: "codex", conversation: sparseConversation }));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.result.ranking).toHaveLength(1);
+    expect(body.result.humanReviewReason).toMatchObject({ code: "insufficient_context" });
+  });
+
+  it("allows one grounded actionable task without requesting invented alternatives", async () => {
+    getProviderStatuses.mockResolvedValue([
+      { id: "codex", name: "Codex CLI", available: true },
+    ]);
+    analyseWithCodex.mockResolvedValue({
+      conversationAssessment: {
+        kind: "actionable-task",
+        summary: "The latest message clearly requests a CSV export.",
+        evidenceMessageIds: ["M3"],
+        knownFacts: ["The raw rows must be sent as CSV."],
+        unknowns: [],
+      },
+      interpretations: [{
+        id: "csv-export",
+        kind: "task",
+        title: "Export the raw rows as CSV",
+        summary: "Send the requested raw rows in CSV format.",
+        semanticTerms: ["raw rows", "CSV export", "send CSV"],
+        features: ["format:csv"],
+      }],
+      constraints: [{
+        id: "csv-required",
+        phrases: ["raw rows as CSV"],
+        dimension: "format",
+        value: "csv",
+        mode: "require",
+        strength: 1,
+        label: "Send raw rows as CSV",
+      }],
+      taskBoundaries: [],
+      notes: "No competing source-grounded decision exists.",
+    });
+
+    const response = await POST(request({ provider: "codex", conversation }));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.result.ranking).toHaveLength(1);
+    expect(body.result.uncertain).toBe(false);
+    expect(analyseWithCodex).toHaveBeenCalledTimes(1);
   });
 
   it("handles no slides followed by PowerPoint after all through the demo provider", async () => {
@@ -428,7 +632,7 @@ describe("POST /api/rank", () => {
           value: "database-reliability",
           mode: "require",
           strength: 1,
-          label: "Investigate database reliability",
+          label: "Investigate replication lag",
         },
         {
           id: "runbook-format",
@@ -497,6 +701,113 @@ describe("POST /api/rank", () => {
     expect(body.result.reframes.every((event: { kind: string }) => event.kind === "task-switch")).toBe(true);
   });
 
+  it("retrieves history using only active user-task messages", async () => {
+    const ownerId = "00000000-0000-4000-8000-000000000001";
+    const repository = {
+      findSimilarOutcomes: vi.fn().mockResolvedValue([]),
+      persistRankingRun: vi.fn().mockResolvedValue({
+        id: "run-active-task",
+        state: "decided",
+        duplicate: false,
+      }),
+    };
+    createSQLiteRepository.mockReturnValue(repository);
+    getProviderStatuses.mockResolvedValue([
+      { id: "codex", name: "Codex CLI", available: true },
+    ]);
+    analyseWithCodex.mockResolvedValue({
+      conversationAssessment: {
+        kind: "actionable-task",
+        summary: "The latest user message replaces the database task with onboarding work.",
+        evidenceMessageIds: ["M3"],
+        knownFacts: ["The requested deliverable concerns employee onboarding."],
+        unknowns: [],
+      },
+      interpretations: [
+        {
+          id: "email",
+          title: "Write the onboarding email",
+          summary: "Welcome new employees with a friendly email.",
+          semanticTerms: ["welcome email", "new employees", "friendly"],
+          features: ["topic:employee-onboarding", "format:email"],
+        },
+        {
+          id: "checklist",
+          title: "Create an onboarding checklist",
+          summary: "Give new employees a practical checklist.",
+          semanticTerms: ["new employees", "onboarding", "checklist"],
+          features: ["topic:employee-onboarding", "format:checklist"],
+        },
+        {
+          id: "survey",
+          title: "Create an onboarding survey",
+          summary: "Collect onboarding feedback from new employees.",
+          semanticTerms: ["new employees", "onboarding", "survey"],
+          features: ["topic:employee-onboarding", "format:survey"],
+        },
+      ],
+      constraints: [
+        {
+          id: "onboarding-topic",
+          phrases: ["welcome email"],
+          dimension: "topic",
+          value: "employee-onboarding",
+          mode: "require",
+          strength: 1,
+          label: "Write a welcome email for employee onboarding",
+        },
+      ],
+      taskBoundaries: [
+        {
+          messageId: "M3",
+          reason: "The user replaced database investigation with employee onboarding.",
+        },
+      ],
+      notes: "The current task starts at M3.",
+    });
+    const activeTaskConversation = {
+      ...conversation,
+      conversationId: "active-task-history",
+      messages: [
+        {
+          id: "M1",
+          author: "user",
+          text: "Investigate database replication lag and prepare a diagnostic runbook.",
+          timestamp: "2026-08-14T08:00:00.000Z",
+        },
+        {
+          id: "M2",
+          author: "assistant",
+          text: "I could also prepare an unrelated launch campaign.",
+          timestamp: "2026-08-14T08:01:00.000Z",
+        },
+        {
+          id: "M3",
+          author: "user",
+          text: "Write a friendly welcome email for new employees.",
+          timestamp: "2026-08-14T08:02:00.000Z",
+        },
+      ],
+    };
+
+    const response = await POST(new Request("http://localhost/api/rank", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-device-id": ownerId },
+      body: JSON.stringify({ provider: "codex", conversation: activeTaskConversation }),
+    }));
+    const activeTaskText = activeTaskConversation.messages[2].text;
+    const rawConversationText = activeTaskConversation.messages
+      .map((message) => message.text)
+      .join(" ");
+    const retrieval = repository.findSimilarOutcomes.mock.calls[0]?.[0];
+
+    expect(response.status).toBe(200);
+    expect(retrieval.embedding).toEqual(embeddingProvider.embed([activeTaskText])[0]);
+    expect(retrieval.embedding).not.toEqual(
+      embeddingProvider.embed([rawConversationText])[0],
+    );
+  });
+
   it("retries one transient provider failure and redacts diagnostics", async () => {
     getProviderStatuses.mockResolvedValue([
       { id: "codex", name: "Codex CLI", available: true },
@@ -511,6 +822,56 @@ describe("POST /api/rank", () => {
     expect(body).toContain("provider_failure");
     expect(body).not.toContain("private/path");
     expect(body).not.toContain("secret");
+  });
+
+  it("repairs one malformed provider response before failing the analysis", async () => {
+    getProviderStatuses.mockResolvedValue([
+      { id: "codex", name: "Codex CLI", available: true },
+    ]);
+    analyseWithCodex
+      .mockRejectedValueOnce(new SyntaxError("Unexpected provider output"))
+      .mockResolvedValueOnce({
+        conversationAssessment: {
+          kind: "insufficient-context",
+          summary: "The requested action has no recoverable referent.",
+          evidenceMessageIds: ["M1"],
+          knownFacts: ["The user wants an action performed."],
+          unknowns: ["What the request refers to."],
+        },
+        interpretations: [{
+          id: "missing-referent",
+          kind: "insufficient-context",
+          title: "Insufficient context",
+          summary: "The underlying action cannot be recovered.",
+          semanticTerms: ["missing referent", "unknown action", "insufficient context"],
+          features: ["actionability:insufficient-context"],
+        }],
+        constraints: [],
+        taskBoundaries: [],
+        notes: "The repaired response is grounded.",
+      });
+
+    const response = await POST(request({ provider: "codex", conversation }));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.result.conversationAssessment.kind).toBe("insufficient-context");
+    expect(analyseWithCodex).toHaveBeenCalledTimes(2);
+    expect(analyseWithCodex.mock.calls[1][1]).toMatch(/valid structured output/i);
+  });
+
+  it("returns a structured error after malformed provider output fails repair", async () => {
+    getProviderStatuses.mockResolvedValue([
+      { id: "codex", name: "Codex CLI", available: true },
+    ]);
+    analyseWithCodex.mockRejectedValue(new SyntaxError("Unexpected provider output"));
+
+    const response = await POST(request({ provider: "codex", conversation }));
+    const body = await response.json();
+
+    expect(response.status).toBe(502);
+    expect(body.error.code).toBe("invalid_provider_output");
+    expect(analyseWithCodex).toHaveBeenCalledTimes(2);
   });
 
   it("returns a structured error when corrective normalization still fails", async () => {

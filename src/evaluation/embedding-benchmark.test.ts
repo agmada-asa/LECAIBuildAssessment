@@ -7,8 +7,29 @@ import {
   assessEmbeddingRollout,
   createPendingEmbeddingReport,
 } from "./embedding-benchmark";
+import { evaluateDataset } from "./run";
+import type { EmbeddingProvider } from "@/lib/embeddings/types";
 
 describe("embedding benchmark reporting", () => {
+  it("records a lexical-only ablation independently from trained vectors", () => {
+    const lexicalOnly: EmbeddingProvider = {
+      model: {
+        provider: "ablation",
+        name: "lexical-only",
+        revision: "1",
+        version: "1",
+        dimensions: 1,
+        maxInputTokens: 1,
+        deployment: "local",
+        purpose: "demo/test",
+      },
+      embed: (texts) => texts.map(() => [0]),
+    };
+
+    const metrics = evaluateDataset(undefined, lexicalOnly);
+    console.info(JSON.stringify({ lexicalOnlyTopOneAccuracy: metrics.topOneAccuracy }));
+    expect(metrics.topOneAccuracy).toBeGreaterThanOrEqual(0.8);
+  });
   it("marks trained results pending instead of inventing credentialed measurements", () => {
     expect(createPendingEmbeddingReport("pinned-model", "immutable-revision")).toEqual(
       expect.objectContaining({

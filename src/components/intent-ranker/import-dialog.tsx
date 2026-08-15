@@ -14,13 +14,8 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
   ConversationImportError,
@@ -34,6 +29,7 @@ type ConversationImportDialogProps = {
   provider: ProviderId;
   onProviderChange: (provider: ProviderId) => void;
   onAnalyze: (log: ConversationLog, provider: ProviderId) => Promise<void>;
+  trigger?: React.ReactNode;
 };
 
 /** Imports, validates, previews, and dispatches one arbitrary conversation. */
@@ -42,19 +38,31 @@ export function ConversationImportDialog({
   provider,
   onProviderChange,
   onAnalyze,
+  trigger,
 }: ConversationImportDialogProps) {
   const [open, setOpen] = useState(false);
   const [source, setSource] = useState("");
   const [filename, setFilename] = useState<string>();
+  const [customName, setCustomName] = useState("");
   const [preview, setPreview] = useState<ConversationLog>();
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const selectedProvider = providers.find((item) => item.id === provider);
+  const providerReady = Boolean(selectedProvider?.operational);
 
   /** Validates current text without starting analysis. */
-  function createPreview(nextSource = source, nextFilename = filename) {
+  function createPreview(
+    nextSource = source,
+    nextFilename = filename,
+    nextName = customName,
+  ) {
     try {
-      const log = parseConversationInput(nextSource, { filename: nextFilename });
+      const log = parseConversationInput(nextSource, {
+        filename: nextFilename,
+        conversationId: nextName.trim() || undefined,
+      });
       setPreview(log);
+      setCustomName(nextName.trim() || log.conversationId);
       setError("");
     } catch (caught) {
       setPreview(undefined);
@@ -85,25 +93,43 @@ export function ConversationImportDialog({
     if (file) void loadFile(file);
   }
 
-  /** Closes the preview immediately, then lets the workbench present request progress. */
+  /** Closes the preview immediately, resets dialog inputs, and dispatches analysis. */
   async function submit() {
     if (!preview || submitting) return;
+    const finalConversationId = customName.trim() || preview.conversationId;
+    const logToAnalyze: ConversationLog = {
+      ...preview,
+      conversationId: finalConversationId,
+    };
     setSubmitting(true);
     setOpen(false);
+    setSource("");
+    setFilename(undefined);
+    setCustomName("");
+    setPreview(undefined);
+    setError("");
+    setSubmitting(false);
     try {
-      await onAnalyze(preview, provider);
-      setError("");
+      await onAnalyze(logToAnalyze, provider);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Analysis failed.");
-    } finally {
-      setSubmitting(false);
     }
   }
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger render={<Button size="sm" className="rounded-full" />}>
-        Analyze a log
+      <DialogTrigger
+        render={
+          trigger ? (
+            (trigger as React.ReactElement)
+          ) : (
+            <Button size="sm" variant="outline" className="rounded-full">
+              Analyze a log
+            </Button>
+          )
+        }
+      >
+        {!trigger && "Analyze a log"}
       </DialogTrigger>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[640px]">
         <DialogHeader>
@@ -114,6 +140,15 @@ export function ConversationImportDialog({
         </DialogHeader>
 
         <div className="space-y-4 pt-2">
+          {!providers.some((item) => item.operational) && (
+            <Alert role="status" className="border-amber-200 bg-amber-50 text-amber-950">
+              <HugeiconsIcon icon={Alert02Icon} className="size-4" strokeWidth={2} />
+              <AlertTitle className="text-xs">No provider is ready</AlertTitle>
+              <AlertDescription className="text-xs">
+                Check the server configuration or Codex CLI, then reopen this dialog to retry discovery.
+              </AlertDescription>
+            </Alert>
+          )}
           <div>
             <label htmlFor="analysis-provider" className="mb-2 block text-xs font-semibold">
               Provider
@@ -129,14 +164,14 @@ export function ConversationImportDialog({
               >
                 <SelectValue>
                   {providers.find((item) => item.id === provider)?.name ??
-                    "Deterministic demo"}
+                    "No operational provider"}
                 </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {providers.map((item) => (
-                  <SelectItem key={item.id} value={item.id} disabled={!item.available}>
+                  <SelectItem key={item.id} value={item.id} disabled={!item.operational}>
                     {item.name}
-                    {item.available ? "" : " — unavailable"}
+                    {item.operational ? "" : item.configured ? " — not ready" : " — unavailable"}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -148,21 +183,26 @@ export function ConversationImportDialog({
             onDrop={handleDrop}
             className="rounded-xl border border-dashed bg-muted/25 p-4 text-center"
           >
-            <label htmlFor="conversation-file" className="cursor-pointer text-xs font-semibold">
+            <label htmlFor="conversation-file" className="cursor-pointer block text-xs font-semibold">
               Choose a conversation file
+              <input
+                id="conversation-file"
+                aria-label="Choose conversation file"
+                type="file"
+                accept=".json,.csv,.txt,application/json,text/csv,text/plain"
+                className="sr-only"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) void loadFile(file);
+                }}
+              />
             </label>
-            <input
-              id="conversation-file"
-              aria-label="Choose conversation file"
-              type="file"
-              accept=".json,.csv,.txt,application/json,text/csv,text/plain"
-              className="mt-2 block w-full text-xs text-muted-foreground"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) void loadFile(file);
-              }}
-            />
-            <p className="mt-2 text-[10px] text-muted-foreground">or drag and drop it here</p>
+            <p className="mt-1 text-[10px] text-muted-foreground">or drag and drop it here</p>
+            {filename && (
+              <p className="mt-2 text-xs font-medium text-primary">
+                Selected: {filename}
+              </p>
+            )}
           </div>
 
           <div>
@@ -176,10 +216,11 @@ export function ConversationImportDialog({
               onChange={(event) => {
                 setSource(event.target.value);
                 setFilename(undefined);
+                setCustomName("");
                 setPreview(undefined);
                 setError("");
               }}
-              placeholder="request-17: Prepare the June report.\nfollow-up: Send the raw rows."
+              placeholder={"Prepare the June report.\nSend the raw rows."}
               className="min-h-28 resize-y rounded-xl font-mono text-xs"
             />
           </div>
@@ -211,6 +252,30 @@ export function ConversationImportDialog({
                   {preview.messages.length} messages
                 </span>
               </div>
+              <div className="mb-3">
+                <label htmlFor="conversation-name-input" className="mb-1 block text-xs font-semibold">
+                  Conversation name
+                </label>
+                <Input
+                  id="conversation-name-input"
+                  aria-label="Conversation name"
+                  value={customName}
+                  onChange={(event) => {
+                    const next = event.target.value;
+                    setCustomName(next);
+                    setPreview((current) =>
+                      current
+                        ? {
+                            ...current,
+                            conversationId: next.trim() || current.conversationId,
+                          }
+                        : current,
+                    );
+                  }}
+                  placeholder="Conversation title or ID"
+                  className="rounded-xl text-xs"
+                />
+              </div>
               <div className="max-h-48 space-y-2 overflow-y-auto">
                 {preview.messages.map((message) => (
                   <div key={message.id} className="rounded-lg bg-muted/50 p-2.5">
@@ -221,7 +286,7 @@ export function ConversationImportDialog({
               </div>
               <Button
                 className="mt-3 w-full rounded-xl"
-                disabled={submitting}
+                disabled={submitting || !providerReady}
                 onClick={() => void submit()}
               >
                 {submitting ? "Analyzing…" : `Analyze ${preview.messages.length} messages`}
@@ -229,16 +294,6 @@ export function ConversationImportDialog({
             </section>
           )}
 
-          <p className="text-[10px] text-muted-foreground">
-            Samples:{" "}
-            <a className="underline" href="/samples/finance-reframe.json" download>
-              Finance reframe
-            </a>
-            {" · "}
-            <a className="underline" href="/samples/weekly-ambiguity.csv" download>
-              Weekly ambiguity
-            </a>
-          </p>
         </div>
       </DialogContent>
     </Dialog>

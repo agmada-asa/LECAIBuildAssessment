@@ -12,6 +12,11 @@ import {
   selectActiveTaskMessages,
 } from "./constraints";
 import {
+  calculateTaskFamilyConfidence,
+  HUMAN_REVIEW_POLICY,
+  strongestCompetingTaskCandidate,
+} from "./confidence";
+import {
   buildRankingChange,
   candidateExplanation,
   createExplanation,
@@ -22,6 +27,7 @@ import { rankSnapshot, round, softmax, weightedTotal } from "./scoring";
 import { embeddingProvider } from "@/lib/embeddings/provider";
 import type { EmbeddingProvider, PreparableEmbeddingProvider } from "@/lib/embeddings/types";
 import { SEMANTIC_RECENCY_DECAY } from "./scoring";
+import { tokenOverlap } from "./text";
 import type {
   ConversationMessage,
   HumanReviewReason,
@@ -34,12 +40,60 @@ import type {
 
 export { extractConstraints };
 
-/** Thresholds validated by the committed labelled evaluation set. */
-export const HUMAN_REVIEW_POLICY = {
-  minimumTotal: 0.52,
-  minimumRelativeConfidence: 0.55,
-  minimumTopTwoMargin: 0.12,
-} as const;
+/** Rejects continuity when candidate kind or canonical feature values conflict. */
+function candidatesHaveCompatibleIdentity(
+  current: RankedInterpretation,
+  previous: RankedInterpretation,
+): boolean {
+  if ((current.kind ?? "task") !== (previous.kind ?? "task")) {
+    return false;
+  }
+  const valuesByDimension = (features: string[]) => {
+    const values = new Map<string, Set<string>>();
+    features.forEach((feature) => {
+      const [dimension, value] = feature.toLowerCase().split(":", 2);
+      values.set(dimension, new Set([...(values.get(dimension) ?? []), value]));
+    });
+    return values;
+  };
+  const currentValues = valuesByDimension(current.features);
+  const previousValues = valuesByDimension(previous.features);
+  const conflicts = [...currentValues].some(([dimension, values]) => {
+    const priorValues = previousValues.get(dimension);
+    return priorValues && ![...values].some((value) => priorValues.has(value));
+  });
+  return !conflicts;
+}
+
+/** Returns whether differently identified provider candidates encode the same decision. */
+function candidatesRepresentSameDecision(
+  current: RankedInterpretation,
+  previous: RankedInterpretation,
+): { matches: boolean; score: number } {
+  if (!candidatesHaveCompatibleIdentity(current, previous)) {
+    return { matches: false, score: 0 };
+  }
+
+  const currentFeatures = new Set(current.features.map((feature) => feature.toLowerCase()));
+  const previousFeatures = new Set(previous.features.map((feature) => feature.toLowerCase()));
+  const shared = [...currentFeatures].filter((feature) => previousFeatures.has(feature)).length;
+  const featureRatio = shared / Math.max(1, Math.min(currentFeatures.size, previousFeatures.size));
+  const proseOverlap = tokenOverlap(
+    `${current.title} ${current.summary}`,
+    `${previous.title} ${previous.summary}`,
+  );
+  const termOverlap = tokenOverlap(
+    current.semanticTerms.join(" "),
+    previous.semanticTerms.join(" "),
+  );
+  const matches =
+    (shared >= 2 && featureRatio >= 0.6) ||
+    (shared >= 1 && featureRatio === 1 && Math.max(proseOverlap, termOverlap) >= 0.25);
+  return {
+    matches,
+    score: featureRatio * 0.6 + proseOverlap * 0.2 + termOverlap * 0.2,
+  };
+}
 
 /** Adds prior values, signed deltas, and evidence changes to matching candidates. */
 function compareCandidates(
@@ -48,10 +102,28 @@ function compareCandidates(
   newestMessage: ConversationMessage | undefined,
 ): void {
   const previousById = new Map(previous?.map((item) => [item.id, item]) ?? []);
+  const usedPreviousIds = new Set<string>();
 
   current.forEach((item) => {
-    const prior = previousById.get(item.id);
+    const exactPrior = previousById.get(item.id);
+    // Provider IDs are regenerated from titles, so equality is only a lookup
+    // hint. Conflicting kind or feature values represent a new decision.
+    const compatibleExactPrior = exactPrior &&
+      !usedPreviousIds.has(exactPrior.id) &&
+      candidatesHaveCompatibleIdentity(item, exactPrior)
+      ? exactPrior
+      : undefined;
+    const prior = compatibleExactPrior ?? previous
+      ?.filter((candidate) => !usedPreviousIds.has(candidate.id))
+      .map((candidate) => ({
+        candidate,
+        ...candidatesRepresentSameDecision(item, candidate),
+      }))
+      .filter((candidate) => candidate.matches)
+      .sort((left, right) => right.score - left.score)[0]
+      ?.candidate;
     if (prior && newestMessage) {
+      usedPreviousIds.add(prior.id);
       item.previousRank = prior.rank;
       item.previous = {
         rank: prior.rank,
@@ -112,8 +184,14 @@ export function evaluateHumanReview(
     };
   }
   const top = ranking[0];
-  const runnerUp = ranking[1];
-  const margin = top.confidence - runnerUp.confidence;
+  if (top.kind === "insufficient-context") {
+    return {
+      code: "insufficient_context",
+      message: "the underlying action or topic cannot be recovered from the supplied messages.",
+    };
+  }
+  if (top.kind === "conversation") return undefined;
+  const taskFamily = calculateTaskFamilyConfidence(ranking);
 
   if (top.total < HUMAN_REVIEW_POLICY.minimumTotal) {
     return {
@@ -121,16 +199,48 @@ export function evaluateHumanReview(
       message: "no interpretation has enough supporting evidence.",
     };
   }
-  if (top.confidence < HUMAN_REVIEW_POLICY.minimumRelativeConfidence) {
+  const supportingConstraintCount = new Set(
+    top.evidence
+      .filter(
+        (evidence) =>
+          evidence.kind === "constraints" && evidence.sentiment === "supports",
+      )
+      .map((evidence) => `${evidence.messageId ?? "unknown"}:${evidence.text}`),
+  ).size;
+  const hasConstraintConflict = top.evidence.some(
+    (evidence) =>
+      evidence.kind === "constraints" && evidence.sentiment === "conflicts",
+  );
+  const strongestValidAlternative = ranking
+    .slice(1)
+    .find((candidate) => candidate.valid !== false);
+  const totalMargin = top.total - (strongestValidAlternative?.total ?? 0);
+  // Several exact, conflict-free source matches are stronger evidence than a
+  // provider catalogue whose weaker framing variants divide softmax confidence.
+  const hasDecisiveExplicitEvidence =
+    top.total >= HUMAN_REVIEW_POLICY.minimumDecisiveTotal &&
+    totalMargin >= HUMAN_REVIEW_POLICY.minimumDecisiveTotalMargin &&
+    top.signals.constraints >= HUMAN_REVIEW_POLICY.minimumDecisiveConstraintScore &&
+    supportingConstraintCount >=
+      HUMAN_REVIEW_POLICY.minimumDecisiveConstraintMatches &&
+    !hasConstraintConflict;
+
+  if (
+    !hasDecisiveExplicitEvidence &&
+    taskFamily.confidence < HUMAN_REVIEW_POLICY.minimumRelativeConfidence
+  ) {
     return {
       code: "low_relative_confidence",
-      message: "the leading interpretation does not clear 55% relative confidence.",
+      message: "the leading task family does not clear 55% relative confidence.",
     };
   }
-  if (margin < HUMAN_REVIEW_POLICY.minimumTopTwoMargin) {
+  if (
+    !hasDecisiveExplicitEvidence &&
+    taskFamily.margin < HUMAN_REVIEW_POLICY.minimumTopFamilyMargin
+  ) {
     return {
       code: "close_candidates",
-      message: `the top two interpretations are only ${Math.round(margin * 100)} points apart.`,
+      message: `the top two task families are only ${Math.round(taskFamily.margin * 100)} points apart.`,
     };
   }
   return undefined;
@@ -150,6 +260,13 @@ export function generateClarificationQuestion(
   for (const [dimension, topValue] of topFeatures) {
     const runnerValue = runnerFeatures.get(dimension);
     if (runnerValue && runnerValue !== topValue) {
+      if (dimension === "task") {
+        const action = (title: string) => {
+          const withoutPunctuation = title.trim().replace(/[.!?]+$/, "");
+          return withoutPunctuation.charAt(0).toLowerCase() + withoutPunctuation.slice(1);
+        };
+        return `Should I ${action(top.title)} or ${action(runnerUp.title)}?`;
+      }
       const readable = (value: string) => value.replace(/-/g, " ");
       return `Should the ${readable(dimension)} be ${readable(topValue)} or ${readable(runnerValue)}?`;
     }
@@ -189,6 +306,7 @@ export function rankConversation(
   compareCandidates(current.ranking, previous?.ranking, newestMessage);
 
   let humanReviewReason = evaluateHumanReview(current.ranking);
+  const taskFamily = calculateTaskFamilyConfidence(current.ranking);
   const latestReframe = newestMessage
     ? [...current.reframes]
         .reverse()
@@ -217,10 +335,13 @@ export function rankConversation(
   }
   const uncertaintyReason = humanReviewReason?.message;
   const uncertain = Boolean(humanReviewReason);
-  const clarificationQuestion = uncertain && humanReviewReason?.code !== "none_above"
-    ? generateClarificationQuestion(current.ranking[0], current.ranking[1])
+  const strongestAlternative = strongestCompetingTaskCandidate(current.ranking);
+  const clarificationQuestion = uncertain &&
+    strongestAlternative &&
+    !["none_above", "insufficient_context"].includes(humanReviewReason?.code ?? "")
+    ? generateClarificationQuestion(current.ranking[0], strongestAlternative)
     : undefined;
-  const mostInfluentialAxis = influentialAxis(weights);
+  const mostInfluentialAxis = influentialAxis(weights, current.ranking);
   const rankingChange = buildRankingChange(
     current.ranking,
     previous?.ranking,
@@ -236,17 +357,27 @@ export function rankConversation(
       messages,
       input.taskBoundaries,
     ),
+    conversationAssessment: input.conversationAssessment ?? {
+      kind: "undetermined",
+      summary: "This legacy result was ranked without an actionability assessment.",
+      evidenceMessageIds: [],
+      knownFacts: [],
+      unknowns: [],
+    },
     latestReframe,
     rankingChange,
     mostInfluentialAxis,
     uncertain,
     uncertaintyReason,
     confidenceLabel: "relative",
+    decisionConfidence: taskFamily.confidence,
+    decisionMargin: taskFamily.margin,
     humanReviewReason,
     clarificationQuestion,
     semanticModel: {
       ...embeddings.model,
       recencyDecay: SEMANTIC_RECENCY_DECAY,
+      conversationRecencyDecay: 1,
       lexicalFallback: true,
     },
     explanation: createExplanation(
@@ -330,7 +461,11 @@ export function reweightRankingResult(
       deltas: undefined,
       change: undefined,
     }))
-    .sort((left, right) => right.total - left.total);
+    .sort(
+      (left, right) =>
+        Number(right.valid !== false) - Number(left.valid !== false) ||
+        right.total - left.total,
+    );
   const validItems = ranking.filter((item) => item.valid !== false);
   const confidences = validItems.length
     ? softmax(validItems.map((item) => item.total))
@@ -345,8 +480,10 @@ export function reweightRankingResult(
     source.humanReviewReason?.code === "stale_candidates"
       ? source.humanReviewReason
       : evaluateHumanReview(ranking);
+  const taskFamily = calculateTaskFamilyConfidence(ranking);
   const uncertain = Boolean(humanReviewReason);
-  const mostInfluentialAxis = influentialAxis(weights);
+  const mostInfluentialAxis = influentialAxis(weights, ranking);
+  const strongestAlternative = strongestCompetingTaskCandidate(ranking);
   return {
     ...source,
     ranking,
@@ -355,8 +492,11 @@ export function reweightRankingResult(
     uncertain,
     uncertaintyReason: humanReviewReason?.message,
     humanReviewReason,
-    clarificationQuestion: uncertain && humanReviewReason?.code !== "none_above"
-      ? generateClarificationQuestion(ranking[0], ranking[1])
+    decisionConfidence: taskFamily.confidence,
+    decisionMargin: taskFamily.margin,
+    clarificationQuestion: uncertain && strongestAlternative &&
+      !["none_above", "insufficient_context"].includes(humanReviewReason?.code ?? "")
+      ? generateClarificationQuestion(ranking[0], strongestAlternative)
       : undefined,
     explanation: createExplanation(
       ranking,

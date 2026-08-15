@@ -2,7 +2,7 @@
  * @file Shared domain types for the intent-ranking engine.
  *
  * Keeping these types independent from React makes the ranking logic usable by
- * the browser demo, API routes, command-line providers, and automated tests.
+ * the browser workbench, API routes, command-line providers, and automated tests.
  */
 
 export type SignalKey = "semantic" | "constraints" | "history";
@@ -30,8 +30,34 @@ export type ConversationTransition = {
   summary: string;
 };
 
+/** The decision made before candidate ranking begins. */
+export type ConversationAssessmentKind =
+  | "actionable-task"
+  | "ordinary-conversation"
+  | "insufficient-context"
+  | "undetermined";
+
+/** Provider assessment that separates task existence from topic interpretation. */
+export type ConversationAssessment = {
+  kind: ConversationAssessmentKind;
+  summary: string;
+  /** Source messages that support the assessment, validated during normalization. */
+  evidenceMessageIds: string[];
+  knownFacts: string[];
+  /** Material details that cannot be recovered from the supplied log. */
+  unknowns: string[];
+};
+
+/** Candidate role within the pre-ranking actionability decision. */
+export type InterpretationKind =
+  | "task"
+  | "conversation"
+  | "insufficient-context";
+
 export type Interpretation = {
   id: string;
+  /** Optional only for persisted results created before actionability gating. */
+  kind?: InterpretationKind;
   title: string;
   summary: string;
   /** Phrases used by the transparent local semantic scorer. */
@@ -72,26 +98,15 @@ export type TaskBoundary = {
   reason: string;
 };
 
-/** Minimal input required by the ranker, independent of walkthrough fixtures. */
+/** Minimal input required by the ranker, independent of its callers. */
 export type RankingInput = {
   interpretations: Interpretation[];
   constraintRules: ConstraintRule[];
   history: HistoricalTask[];
-  /** Semantic task switches detected upstream; absent for legacy fixtures. */
+  /** Semantic task switches detected upstream; absent from older stored inputs. */
   taskBoundaries?: TaskBoundary[];
-};
-
-export type Scenario = RankingInput & {
-  id: string;
-  title: string;
-  shortTitle: string;
-  description: string;
-  userName: string;
-  userRole: string;
-  messages: ConversationMessage[];
-  interpretations: Interpretation[];
-  constraintRules: ConstraintRule[];
-  history: HistoricalTask[];
+  /** Absent only from ranking inputs persisted before actionability gating. */
+  conversationAssessment?: ConversationAssessment;
 };
 
 export type Evidence = {
@@ -162,6 +177,7 @@ export type CandidateChange = {
 
 export type RankedInterpretation = {
   id: string;
+  kind?: InterpretationKind;
   rank: number;
   previousRank?: number;
   title: string;
@@ -188,6 +204,7 @@ export type HumanReviewReasonCode =
   | "weak_evidence"
   | "low_relative_confidence"
   | "close_candidates"
+  | "insufficient_context"
   | "stale_candidates";
 
 /** Stable policy code plus user-facing explanation for automated routing. */
@@ -218,6 +235,8 @@ export type RankingChange = {
 export type InfluentialAxis = {
   key: SignalKey;
   weight: number;
+  /** Weighted score advantage over the strongest competing candidate. */
+  contribution: number;
   explanation: string;
 };
 
@@ -228,6 +247,8 @@ export type RankingResult = {
   activeConstraints: ExtractedConstraint[];
   reframes: ReframeEvent[];
   conversationTransitions: ConversationTransition[];
+  /** Explicit result of the actionability/context gate that precedes ranking. */
+  conversationAssessment: ConversationAssessment;
   /** Present only when the newest message itself changed a constraint. */
   latestReframe?: ReframeEvent;
   rankingChange?: RankingChange;
@@ -235,6 +256,10 @@ export type RankingResult = {
   uncertain: boolean;
   uncertaintyReason?: string;
   confidenceLabel: "relative";
+  /** Confidence assigned to the winning family of near-identical task variants. */
+  decisionConfidence: number;
+  /** Winning task-family confidence minus the strongest competing family. */
+  decisionMargin: number;
   humanReviewReason?: HumanReviewReason;
   clarificationQuestion?: string;
   /** Versioned embedding model used for messages, candidates, and history. */
@@ -247,6 +272,8 @@ export type RankingResult = {
     deployment: "local" | "hosted";
     purpose: "production" | "demo/test";
     recencyDecay: number;
+    /** Ordinary-conversation readings use full-log coverage instead of recency. */
+    conversationRecencyDecay: number;
     lexicalFallback: boolean;
   };
   explanation: string;

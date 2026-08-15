@@ -14,6 +14,7 @@ export default defineConfig({
   },
   webServer: {
     command: "pnpm exec next start -p 3011",
+    env: { RESOLVE_ENABLE_TEST_PROVIDER: "1" },
     url: "http://localhost:3011",
     reuseExistingServer: false,
     timeout: 120_000,

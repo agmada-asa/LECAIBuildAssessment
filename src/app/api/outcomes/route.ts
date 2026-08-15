@@ -14,17 +14,9 @@ export const runtime = "nodejs";
 const requestSchema = z
   .object({
     rankingRunId: z.string().uuid(),
-    conversationUserId: z.string().trim().min(1).max(200),
-    domainName: z.string().trim().min(1).max(100).optional(),
     decision: z.enum(["accepted", "corrected"]),
     correction: z.string().trim().min(1).max(200).optional(),
-    interpretation: z.object({
-      id: z.string().trim().min(1).max(200),
-      title: z.string().trim().min(1).max(200),
-      summary: z.string().trim().min(1).max(2_000),
-      semanticTerms: z.array(z.string().trim().min(1)).max(20),
-      features: z.array(z.string().trim().min(1)).max(20),
-    }),
+    interpretationId: z.string().trim().min(1).max(200),
   })
   .superRefine((value, context) => {
     if (value.decision === "corrected" && !value.correction) {
@@ -63,17 +55,37 @@ export async function POST(request: Request) {
 
   try {
     const {
-      interpretation,
       decision,
       correction,
-      conversationUserId,
-      domainName,
       rankingRunId,
+      interpretationId,
     } = parsed.data;
-    if (!(await repository.rankingRunBelongsToUser(rankingRunId, userId))) {
+    const run = await repository.rankingRunForOwner(rankingRunId, userId);
+    if (!run) {
       return NextResponse.json(
         { error: "That ranking run is not available to this user." },
         { status: 403 },
+      );
+    }
+    const interpretation = run.result.ranking.find(
+      (candidate) => candidate.id === interpretationId,
+    );
+    if (!interpretation) {
+      return NextResponse.json(
+        { error: "That interpretation is not part of the saved ranking run." },
+        { status: 400 },
+      );
+    }
+    if (
+      decision === "accepted" &&
+      ((interpretation.kind ?? "task") !== "task" || interpretation.valid === false)
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Only a grounded task interpretation can be accepted as future task history. Supply a correction instead.",
+        },
+        { status: 400 },
       );
     }
     const embeddings = createConfiguredEmbeddingProvider();
@@ -85,8 +97,8 @@ export async function POST(request: Request) {
     await repository.storeOutcome({
       id: randomUUID(),
       ownerId: userId,
-      userId: conversationUserId,
-      domainName,
+      userId: run.conversation.userId,
+      domainName: run.conversation.domain?.name,
       sourceRankingRunId: rankingRunId,
       interpretationKey: interpretation.id,
       title: interpretation.title,
@@ -103,8 +115,8 @@ export async function POST(request: Request) {
       await repository.storeOutcome({
         id: randomUUID(),
         ownerId: userId,
-        userId: conversationUserId,
-        domainName,
+        userId: run.conversation.userId,
+        domainName: run.conversation.domain?.name,
         sourceRankingRunId: rankingRunId,
         interpretationKey: undefined,
         title: correction,
@@ -118,7 +130,8 @@ export async function POST(request: Request) {
         embeddingVersion: embeddings.model.version,
       });
     }
-    return NextResponse.json({ saved: true, decision });
+    const resolved = await repository.resolveRankingReview(userId, rankingRunId);
+    return NextResponse.json({ saved: true, decision, resolved });
   } catch {
     return NextResponse.json(
       { error: "The outcome could not be saved." },

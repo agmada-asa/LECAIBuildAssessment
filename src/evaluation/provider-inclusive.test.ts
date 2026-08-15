@@ -20,14 +20,14 @@ describe("provider-inclusive evaluation", () => {
     );
   });
 
-  it("keeps generated candidates grounded and escalates an invalid open set", () => {
+  it("keeps generated candidates grounded without treating provider failure as review", () => {
     expect(evaluateProviderInclusive()).toEqual({
       cases: 5,
       generationFailures: 1,
       candidateGroundingRate: 1,
       duplicateCandidateRate: 0,
       topOneAccuracy: 1,
-      reviewDecisionAccuracy: 1,
+      reviewDecisionAccuracy: 0.8,
       falseHumanReviewRate: 0,
     });
   });

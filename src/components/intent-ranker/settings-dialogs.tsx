@@ -2,7 +2,6 @@
 
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
-  AiBrain03Icon,
   BotIcon,
   InformationCircleIcon,
   Refresh01Icon,
@@ -30,7 +29,7 @@ import {
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import type { ProviderId, ProviderStatus } from "@/lib/providers/types";
-import { WEIGHT_PRESETS } from "@/lib/ranking/scenarios";
+import { WEIGHT_PRESETS } from "@/lib/ranking/policy";
 import type { SignalKey, SignalWeights } from "@/lib/ranking/types";
 import { cn } from "@/lib/utils";
 import { SIGNAL_KEYS, SIGNAL_META } from "./model";
@@ -180,13 +179,13 @@ export function ProviderSettings({
               <div
                 className={cn(
                   "flex size-9 items-center justify-center rounded-lg",
-                  provider.available
+                  provider.operational
                     ? "bg-primary/10 text-primary"
                     : "bg-muted text-muted-foreground",
                 )}
               >
                 <HugeiconsIcon
-                  icon={provider.id === "demo" ? AiBrain03Icon : BotIcon}
+                  icon={BotIcon}
                   className="size-4"
                   strokeWidth={2}
                 />
@@ -200,23 +199,26 @@ export function ProviderSettings({
                     </Badge>
                   )}
                 </div>
-                <p className="mt-0.5 truncate text-[10px] text-muted-foreground">
+                <p className="mt-0.5 text-xs text-muted-foreground">
                   {provider.detail}
                 </p>
               </div>
               <span
                 className={cn(
                   "size-2 rounded-full",
-                  provider.available ? "bg-emerald-500" : "bg-muted-foreground/40",
+                  provider.operational
+                    ? "bg-emerald-500"
+                    : provider.configured
+                      ? "bg-amber-500"
+                      : "bg-muted-foreground/40",
                 )}
               />
             </div>
           ))}
         </div>
         <p className="text-[11px] leading-5 text-muted-foreground">
-          The walkthrough works without an account. Live candidates can come from an installed
-          Codex CLI or a server-configured OpenAI-compatible API; credentials never enter the
-          browser.
+          Green means a bounded readiness check succeeded. Amber means configuration exists but
+          the provider did not answer the check. Credentials never enter the browser.
         </p>
       </DialogContent>
     </Dialog>

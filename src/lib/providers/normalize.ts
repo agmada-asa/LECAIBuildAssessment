@@ -22,17 +22,29 @@ const featureSchema = z
 
 /** Runtime schema shared by every provider before ranking. */
 export const providerAnalysisSchema = z.object({
+  conversationAssessment: z.object({
+    kind: z.enum([
+      "actionable-task",
+      "ordinary-conversation",
+      "insufficient-context",
+    ]),
+    summary: z.string().trim().min(1).max(2_000),
+    evidenceMessageIds: z.array(z.string().trim().min(1).max(200)).max(100),
+    knownFacts: z.array(z.string().trim().min(1).max(1_000)).max(20),
+    unknowns: z.array(z.string().trim().min(1).max(1_000)).max(20),
+  }).optional(),
   interpretations: z
     .array(
       z.object({
         id: z.string().trim().min(1),
+        kind: z.enum(["task", "conversation", "insufficient-context"]).default("task"),
         title: z.string().trim().min(1).max(200),
         summary: z.string().trim().min(1).max(2_000),
         semanticTerms: z.array(z.string().trim().min(1)).min(3).max(10),
         features: z.array(featureSchema).min(1).max(20),
       }),
     )
-    .min(3)
+    .min(1)
     .max(5),
   constraints: z.array(
     z.object({
@@ -127,6 +139,41 @@ function hasGroundedLabel(label: string, phrase: string): boolean {
   const labelTerms = groundingTerms(label);
   const phraseTerms = groundingTerms(phrase);
   return [...labelTerms].some((term) => phraseTerms.has(term));
+}
+
+/** Checks whether the source phrase names the canonical constraint itself. */
+function hasGroundedConstraintIdentity(
+  dimension: string,
+  value: string,
+  phrase: string,
+): boolean {
+  const identityTerms = groundingTerms(`${dimension} ${value.replace(/-/g, " ")}`);
+  const phraseTerms = groundingTerms(phrase);
+  return [...identityTerms].some((term) => phraseTerms.has(term));
+}
+
+/** A pure acknowledgement cannot support a new constraint or task boundary. */
+function isConversationalAcknowledgement(value: string): boolean {
+  const text = normaliseText(value);
+  return /^(?:(?:great|perfect|okay|ok|cool|sure|thanks|thank you|got it|sounds good)(?: see you (?:there|then))?|see you (?:there|then))$/.test(
+    text,
+  );
+}
+
+/** Requires a self-contained request cue before accepting a whole-task switch. */
+function containsTaskRequest(value: string): boolean {
+  const text = normaliseText(value);
+  return (
+    /\b(?:can|could|would|will) you\b/.test(text) ||
+    /\b(?:please|must|need to|have to|make sure)\b/.test(text) ||
+    /\b(?:i|we) (?:need|want|require)\b/.test(text) ||
+    /\b(?:task|request|brief|deliverable|goal|priority|work) (?:is|becomes|should be|has changed to)\b/.test(
+      text,
+    ) ||
+    /^(?:add|book|build|call|check|compare|create|draft|export|find|fix|get|investigate|make|prepare|publish|record|remove|review|schedule|send|set|show|summari[sz]e|tell|test|update|write)\b/.test(
+      text,
+    )
+  );
 }
 
 /** Returns token overlap against the smaller candidate description. */
@@ -230,6 +277,7 @@ export function normalizeProviderAnalysis(
   analysis.interpretations.forEach((candidate) => {
     const duplicate = interpretations.find(
       (item) =>
+        (item.kind ?? "task") === (candidate.kind ?? "task") &&
         !haveConflictingFeatures(item.features, candidate.features) &&
         (normaliseText(item.title) === normaliseText(candidate.title) ||
           areEquivalentCandidates(item, candidate)),
@@ -253,18 +301,65 @@ export function normalizeProviderAnalysis(
     interpretations.push({
       ...candidate,
       id,
+      kind: candidate.kind ?? "task",
       semanticTerms: [...new Set(candidate.semanticTerms.map((term) => term.trim()))],
       features: [...new Set(candidate.features.map((feature) => feature.toLowerCase()))],
     });
   });
 
-  if (interpretations.length < 3) {
-    throw new Error("The provider must return at least three genuinely distinct interpretations.");
-  }
-
   const instructionMessages = selectUserInstructionMessages(log.messages);
   const sourceText = instructionMessages.map((message) => normaliseText(message.text));
   const sourceMessageIds = new Set(instructionMessages.map((message) => message.id));
+  const conversationAssessment = analysis.conversationAssessment
+    ? { ...analysis.conversationAssessment }
+    : {
+        kind: "undetermined" as const,
+        summary: "This legacy provider result did not include an actionability assessment.",
+        evidenceMessageIds: [],
+        knownFacts: [],
+        unknowns: [],
+      };
+  conversationAssessment.evidenceMessageIds.forEach((messageId) => {
+    if (!sourceMessageIds.has(messageId)) {
+      throw new Error(
+        `Conversation assessment evidence “${messageId}” is not grounded in a source message.`,
+      );
+    }
+  });
+  const expectedCandidateKind =
+    conversationAssessment.kind === "actionable-task"
+      ? "task"
+      : conversationAssessment.kind === "ordinary-conversation"
+        ? "conversation"
+        : conversationAssessment.kind === "insufficient-context"
+          ? "insufficient-context"
+          : undefined;
+  const compatibleInterpretations = expectedCandidateKind
+    ? interpretations.filter((candidate) => candidate.kind === expectedCandidateKind)
+    : interpretations;
+  // Legacy provider snapshots without an assessment retain the old catalogue
+  // requirement. Assessed logs may truthfully expose one clear task or reading.
+  const requiresLegacyCatalogue = conversationAssessment.kind === "undetermined";
+  if (interpretations.length < (requiresLegacyCatalogue ? 3 : 1)) {
+    throw new Error(
+      requiresLegacyCatalogue
+        ? "The provider must return at least three genuinely distinct interpretations."
+        : "The provider must return a grounded interpretation matching its conversation assessment.",
+    );
+  }
+  if (expectedCandidateKind && compatibleInterpretations.length === 0) {
+    throw new Error(
+      `The provider must return a ${expectedCandidateKind} interpretation matching its conversation assessment.`,
+    );
+  }
+  if (
+    conversationAssessment.kind === "actionable-task" &&
+    compatibleInterpretations.length !== interpretations.length
+  ) {
+    throw new Error(
+      `Every interpretation must be a ${expectedCandidateKind} interpretation matching its conversation assessment.`,
+    );
+  }
   (analysis.taskBoundaries ?? []).forEach((boundary) => {
     if (!sourceMessageIds.has(boundary.messageId)) {
       throw new Error(
@@ -282,6 +377,10 @@ export function normalizeProviderAnalysis(
         `Constraint “${constraint.id}” is not grounded in a source message.`,
       );
     }
+    const constraintPhrases = groundedPhrases.filter(
+      (phrase) => !isConversationalAcknowledgement(phrase),
+    );
+    if (!constraintPhrases.length) return [];
     if (
       !interpretations.some((candidate) =>
         candidate.features.some((feature) => feature.startsWith(`${constraint.dimension}:`)),
@@ -291,10 +390,30 @@ export function normalizeProviderAnalysis(
         `Constraint dimension “${constraint.dimension}” is missing from candidate features.`,
       );
     }
-    const phrases = groundedPhrases.filter((phrase) =>
+    const identityGroundedPhrases = constraintPhrases.filter(
+      (phrase) =>
+        hasGroundedLabel(constraint.label, phrase) ||
+        hasGroundedConstraintIdentity(
+          constraint.dimension,
+          constraint.value,
+          phrase,
+        ),
+    );
+    if (!identityGroundedPhrases.length) {
+      throw new Error(
+        `Constraint “${constraint.id}” label and canonical identity are not grounded in its source phrase.`,
+      );
+    }
+    const labelGrounded = identityGroundedPhrases.some((phrase) =>
       hasGroundedLabel(constraint.label, phrase),
     );
-    return phrases.length ? [{ ...constraint, phrases }] : [];
+    // The exact source phrase is already validated and is safer than silently
+    // removing an explicit instruction because a provider paraphrased its label.
+    return [{
+      ...constraint,
+      phrases: identityGroundedPhrases,
+      label: labelGrounded ? constraint.label : identityGroundedPhrases[0],
+    }];
   });
 
   const messageTextById = new Map(
@@ -302,7 +421,7 @@ export function normalizeProviderAnalysis(
   );
   const taskBoundaries = (analysis.taskBoundaries ?? []).filter((boundary) => {
     const boundaryText = messageTextById.get(boundary.messageId)!;
-    return constraintRules.some(
+    return containsTaskRequest(boundaryText) && constraintRules.some(
       (constraint) =>
         constraint.mode === "require" &&
         (constraint.dimension === "topic" || constraint.dimension === "task") &&
@@ -332,5 +451,6 @@ export function normalizeProviderAnalysis(
     constraintRules,
     history: buildHistory(log, interpretations),
     taskBoundaries,
+    conversationAssessment,
   };
 }

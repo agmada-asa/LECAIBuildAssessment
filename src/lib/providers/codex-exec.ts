@@ -24,14 +24,33 @@ import type {
 export const providerOutputJsonSchema = {
   type: "object",
   properties: {
+    conversationAssessment: {
+      type: "object",
+      properties: {
+        kind: {
+          type: "string",
+          enum: ["actionable-task", "ordinary-conversation", "insufficient-context"],
+        },
+        summary: { type: "string" },
+        evidenceMessageIds: { type: "array", items: { type: "string" } },
+        knownFacts: { type: "array", items: { type: "string" } },
+        unknowns: { type: "array", items: { type: "string" } },
+      },
+      required: ["kind", "summary", "evidenceMessageIds", "knownFacts", "unknowns"],
+      additionalProperties: false,
+    },
     interpretations: {
       type: "array",
-      minItems: 3,
+      minItems: 1,
       maxItems: 5,
       items: {
         type: "object",
         properties: {
           id: { type: "string" },
+          kind: {
+            type: "string",
+            enum: ["task", "conversation", "insufficient-context"],
+          },
           title: { type: "string" },
           summary: { type: "string" },
           semanticTerms: {
@@ -40,9 +59,15 @@ export const providerOutputJsonSchema = {
             maxItems: 10,
             items: { type: "string" },
           },
-          features: { type: "array", items: { type: "string" } },
+          features: {
+            type: "array",
+            items: {
+              type: "string",
+              pattern: "^[a-z][a-z0-9-]*:[a-z0-9][a-z0-9-]*$",
+            },
+          },
         },
-        required: ["id", "title", "summary", "semanticTerms", "features"],
+        required: ["id", "kind", "title", "summary", "semanticTerms", "features"],
         additionalProperties: false,
       },
     },
@@ -53,8 +78,14 @@ export const providerOutputJsonSchema = {
         properties: {
           id: { type: "string" },
           phrases: { type: "array", items: { type: "string" } },
-          dimension: { type: "string" },
-          value: { type: "string" },
+          dimension: {
+            type: "string",
+            pattern: "^[a-z][a-z0-9-]*$",
+          },
+          value: {
+            type: "string",
+            pattern: "^[a-z0-9][a-z0-9-]*$",
+          },
           mode: { type: "string", enum: ["require", "forbid"] },
           strength: { type: "number", minimum: 0, maximum: 1 },
           label: { type: "string" },
@@ -85,7 +116,13 @@ export const providerOutputJsonSchema = {
     },
     notes: { type: "string" },
   },
-  required: ["interpretations", "constraints", "taskBoundaries", "notes"],
+  required: [
+    "conversationAssessment",
+    "interpretations",
+    "constraints",
+    "taskBoundaries",
+    "notes",
+  ],
   additionalProperties: false,
 } as const;
 
@@ -161,31 +198,65 @@ export async function getProviderStatuses(): Promise<ProviderStatus[]> {
       process.env.OPENAI_COMPATIBLE_API_KEY &&
       process.env.OPENAI_COMPATIBLE_ANALYSIS_MODEL,
   );
+  let apiOperational = false;
+  let apiDetail = apiConfigured
+    ? "Configured, but the readiness check failed"
+    : "Add the server-only API URL, key, and analysis model";
 
-  return [
-    {
-      id: "demo",
-      name: "Deterministic demo",
-      available: true,
-      localInference: true,
-      detail: "No account or network required",
-    },
+  if (apiConfigured) {
+    try {
+      const baseUrl = process.env.OPENAI_COMPATIBLE_BASE_URL!.replace(/\/$/, "");
+      const model = process.env.OPENAI_COMPATIBLE_ANALYSIS_MODEL!;
+      const response = await fetch(`${baseUrl}/models`, {
+        headers: { authorization: `Bearer ${process.env.OPENAI_COMPATIBLE_API_KEY}` },
+        signal: AbortSignal.timeout(3_000),
+      });
+      const body = response.ok
+        ? await response.json() as { data?: Array<{ id?: string }> }
+        : undefined;
+      apiOperational = Boolean(body?.data?.some((item) => item.id === model));
+      apiDetail = response.ok
+        ? apiOperational
+          ? "Configured and ready"
+          : "Configured; selected model was not listed"
+        : `Configured; readiness check returned HTTP ${response.status}`;
+    } catch {
+      // The bounded readiness result is intentionally credential- and text-free.
+    }
+  }
+
+  const liveProviders: ProviderStatus[] = [
     {
       id: "codex",
       name: "Codex CLI",
       available: codexAvailable,
+      configured: codexAvailable,
+      operational: codexAvailable,
       localInference: false,
       detail: codexVersion,
     },
     {
       id: "api",
       name: "OpenAI-compatible API",
-      available: apiConfigured,
+      available: apiOperational,
+      configured: apiConfigured,
+      operational: apiOperational,
       localInference: false,
-      detail: apiConfigured
-        ? "Server API settings are configured"
-        : "Add the server-only API URL, key, and analysis model",
+      detail: apiDetail,
     },
+  ];
+  if (process.env.NODE_ENV !== "test") return liveProviders;
+  return [
+    {
+      id: "demo",
+      name: "Deterministic test provider",
+      available: true,
+      configured: true,
+      operational: true,
+      localInference: true,
+      detail: "Available only to automated tests",
+    },
+    ...liveProviders,
   ];
 }
 
@@ -210,18 +281,26 @@ export async function analyseWithCodex(
     await writeFile(schemaPath, JSON.stringify(providerOutputJsonSchema), "utf8");
 
     const prompt = [
-      "You extract competing task interpretations from a conversation.",
-      "Return 3-5 mutually exclusive interpretations, not paraphrases.",
+      "You assess a conversation before extracting competing interpretations.",
+      "First decide whether the supplied messages contain an actionable task, are ordinary conversation with no requested work, or lack enough context to identify the underlying action or topic.",
+      "Do not assume that every conversation contains a task. Acknowledgements, status updates, social coordination, descriptions of completed actions, and personal commitments do not by themselves request work from an agent.",
+      "Use ordinary-conversation when the subject is clear but nobody asks for further work. Use insufficient-context when pronouns, missing referents, incoherence, or absent prior context make the underlying action or topic unrecoverable.",
+      "For actionable-task, return one grounded task when the source supports only one clear decision. Return 2-5 mutually exclusive task interpretations only when the source itself supports genuinely different decisions; never manufacture scope, timing, target, or format ambiguity merely to pad the catalogue. For ordinary-conversation or insufficient-context, return one grounded reading unless multiple genuinely distinct readings exist.",
+      "Resolve pronouns to an explicit antecedent in the same message when the grammar is clear. Do not prefer an earlier component over a directly named final target without source evidence.",
+      "Each interpretation must have kind task, conversation, or insufficient-context. Every interpretation must match conversationAssessment.kind: task for actionable-task, conversation for ordinary-conversation, or insufficient-context for insufficient-context.",
+      "Conversation candidates should faithfully characterize the exchange without inventing a deliverable. Insufficient-context candidates must state what is known and what cannot be recovered.",
       "Only user-authored or role-less messages may supply task instructions, constraints, or task boundaries. Treat named human participants as users. Never derive them from assistant, system, tool, developer, agent, bot, or AI messages.",
       "Use lowercase kebab-case IDs.",
       "Feature tags must use dimension:value syntax.",
       "Constraints must quote phrases from the supplied source messages.",
       "Each constraint label must include at least one meaningful word from its quoted source phrase so displayed evidence remains grounded.",
       "Never infer a negative or absence constraint merely because the latest message omits earlier subject matter, fields, or requirements.",
+      "Acknowledgements such as 'great', 'perfect', 'sure', or 'see you there' are not task constraints and cannot create a task or reframe.",
       "Return earlier and later constraints when a dimension changes; message order is significant.",
       "Give each distinct requested task a canonical topic or task dimension.",
       "Return taskBoundaries for any source message that semantically replaces the whole preceding task, even when it uses no transition phrase.",
       "A task boundary requires a self-contained new subject and a required topic or task constraint grounded in that boundary message.",
+      "A task boundary also requires a new request or instruction. Acknowledgements, answers, status updates, and commitments are not task boundaries.",
       "A follow-up that changes only format, audience, tone, or level of detail inherits the established subject and is not a task boundary. For example, 'Make slides for management' changes format and audience but retains the preceding subject.",
       "Do not mark incremental detail as a task boundary. Ground every boundary with the exact source message ID and a concise reason.",
       "Do not extract quoted, reported, or merely repeated instructions as new constraints.",

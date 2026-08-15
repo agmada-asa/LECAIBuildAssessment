@@ -1,8 +1,8 @@
 /**
  * @file Browser-safe parsers that normalise JSON, CSV, and line-based TXT logs.
  *
- * Parsers never sort messages. Missing IDs and timestamps receive stable values
- * based on source order, while supplied source IDs remain unchanged.
+ * Parsers never sort messages. Every imported entry receives a stable ID based
+ * on source order, while supplied authors and timestamps remain optional.
  */
 
 import { conversationLogSchema, type ConversationLog } from "./schema";
@@ -48,16 +48,8 @@ function fallbackTimestamp(index: number): string {
   return new Date(Date.UTC(2000, 0, 1, 0, 0, index)).toISOString();
 }
 
-/** Converts common export field names into the canonical message shape. */
+/** Converts ordered import entries into the canonical message shape. */
 function normaliseMessages(messages: ImportedMessage[]) {
-  const usedIds = new Set(
-    messages
-      .map((message) =>
-        typeof message.id === "string" && message.id.trim() ? message.id.trim() : undefined,
-      )
-      .filter((id): id is string => Boolean(id)),
-  );
-
   return messages.map((message, index) => {
     const authorValue = message.author ?? message.role;
     const author =
@@ -66,22 +58,8 @@ function normaliseMessages(messages: ImportedMessage[]) {
         : undefined;
     const textValue = message.text ?? message.content;
     const timestampValue = message.timestamp;
-    let id =
-      typeof message.id === "string" && message.id.trim()
-        ? message.id.trim()
-        : `M${index + 1}`;
-    let suffix = index + 1;
-    while (
-      (!message.id || !String(message.id).trim()) &&
-      usedIds.has(id)
-    ) {
-      suffix += 1;
-      id = `M${suffix}`;
-    }
-    usedIds.add(id);
-
     return {
-      id,
+      id: `M${index + 1}`,
       ...(author ? { author } : {}),
       text: typeof textValue === "string" ? textValue : "",
       timestamp:
@@ -147,7 +125,24 @@ function parseJson(input: string, options: ConversationImportOptions): unknown {
     throw new ConversationImportError("Paste valid JSON or choose a valid .json file.");
   }
 
-  if (!Array.isArray(value)) return value;
+  if (!Array.isArray(value)) {
+    if (typeof value === "object" && value !== null) {
+      const object = value as Record<string, unknown>;
+      const withConversationId = options.conversationId
+        ? { ...object, conversationId: options.conversationId }
+        : object;
+      if (Array.isArray(object.messages)) {
+        return {
+          ...withConversationId,
+          messages: normaliseMessages(object.messages as ImportedMessage[]),
+        };
+      }
+      if (options.conversationId) {
+        return withConversationId;
+      }
+    }
+    return value;
+  }
   return {
     conversationId: options.conversationId ?? stableId(input),
     userId: options.userId ?? "imported-user",
@@ -156,7 +151,7 @@ function parseJson(input: string, options: ConversationImportOptions): unknown {
   };
 }
 
-/** Parses CSV columns: text is required; id, timestamp, and author are optional. */
+/** Parses CSV columns: text is required; timestamp and author are optional. */
 function parseCsv(input: string, options: ConversationImportOptions): unknown {
   const rows = parseCsvRows(input);
   if (rows.length < 2) {
@@ -169,11 +164,9 @@ function parseCsv(input: string, options: ConversationImportOptions): unknown {
     throw new ConversationImportError('CSV must include a "text" column.');
   }
 
-  const idIndex = headers.indexOf("id");
   const authorIndex = headers.indexOf("author");
   const timestampIndex = headers.indexOf("timestamp");
   const messages = rows.slice(1).map((row) => ({
-    id: idIndex >= 0 ? row[idIndex] : undefined,
     author: authorIndex >= 0 ? row[authorIndex] : undefined,
     text: row[textIndex],
     timestamp: timestampIndex >= 0 ? row[timestampIndex] : undefined,
@@ -187,19 +180,12 @@ function parseCsv(input: string, options: ConversationImportOptions): unknown {
   };
 }
 
-/** Parses one task message per non-empty line with an optional `message-id:` prefix. */
+/** Parses every non-empty TXT line as one complete message. */
 function parseTxt(input: string, options: ConversationImportOptions): unknown {
-  const messages: ImportedMessage[] = [];
-
-  input.split(/\r?\n/).forEach((line) => {
-    if (!line.trim()) return;
-    const match = line.match(/^\s*([^:]{1,200})\s*:\s*(.*)$/);
-    messages.push(
-      match
-        ? { id: match[1].trim(), text: match[2] }
-        : { text: line.trim() },
-    );
-  });
+  const messages: ImportedMessage[] = input
+    .split(/\r?\n/)
+    .filter((line) => line.trim())
+    .map((line) => ({ text: line.trim() }));
 
   return {
     conversationId: options.conversationId ?? stableId(input),

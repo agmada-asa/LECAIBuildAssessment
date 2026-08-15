@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { processQueuedTasks } from "@/lib/queue/processor";
+import { rankingRunIdempotencyKey } from "@/lib/persistence/queue-reconciliation";
+import { DEFAULT_WEIGHTS } from "@/lib/ranking/policy";
 import { SQLiteRankingRepository } from "./sqlite";
 import type { QueueRankingRequest, QueueRankingResult } from "./types";
 
@@ -92,7 +94,12 @@ describe("SQLite conversational task queue", () => {
 
     await processQueuedTasks(repository, userA, rank, { limit: 1 });
     expect(await repository.listRankingTasks(userA)).toEqual([
-      expect.objectContaining({ id: queued.id, state: "failed", attempts: 1 }),
+      expect.objectContaining({
+        id: queued.id,
+        state: "failed",
+        attempts: 1,
+        error: "provider unavailable",
+      }),
     ]);
 
     expect(await repository.retryRankingTask(userA, queued.id)).toBe(true);
@@ -101,6 +108,140 @@ describe("SQLite conversational task queue", () => {
       expect.objectContaining({ id: queued.id, state: "decided", attempts: 2 }),
     ]);
     expect(rank).toHaveBeenCalledTimes(2);
+    repository.close();
+  });
+
+  it("commits a direct analysis to the exact queued revision without a second provider call", async () => {
+    const repository = new SQLiteRankingRepository(databasePath());
+    const queued = await repository.enqueueRankingTask(request("conversation-a"));
+    const result = rankingResult(true);
+
+    expect(
+      await repository.completePendingRankingTask(
+        userA,
+        { id: queued.id, revision: queued.revision },
+        result,
+      ),
+    ).toBe(true);
+    expect(await repository.listRankingTasks(userA)).toEqual([
+      expect.objectContaining({
+        id: queued.id,
+        state: "human_review",
+        attempts: 0,
+        result,
+      }),
+    ]);
+    expect(await repository.claimRankingTasks(userA, 1)).toEqual([]);
+    repository.close();
+  });
+
+  it("reconciles an older pending task from an exact persisted ranking run", async () => {
+    const repository = new SQLiteRankingRepository(databasePath());
+    const queuedRequest = request("conversation-a");
+    const queued = await repository.enqueueRankingTask(queuedRequest);
+    const result = rankingResult();
+    await repository.persistRankingRun({
+      ownerId: userA,
+      idempotencyKey: rankingRunIdempotencyKey({
+        provider: queuedRequest.provider,
+        conversation: queuedRequest.conversation,
+        weights: DEFAULT_WEIGHTS,
+      }),
+      provider: queuedRequest.provider,
+      weights: DEFAULT_WEIGHTS,
+      conversation: queuedRequest.conversation,
+      input: result.input,
+      result: result.result,
+    });
+
+    expect(await repository.reconcilePendingRankingTasks(userA)).toBe(1);
+    expect(await repository.listRankingTasks(userA)).toEqual([
+      expect.objectContaining({
+        id: queued.id,
+        state: "decided",
+        attempts: 0,
+        result: expect.objectContaining({
+          input: result.input,
+          result: result.result,
+        }),
+      }),
+    ]);
+    repository.close();
+  });
+
+  it("renames the queued conversation and persisted ranking history permanently", async () => {
+    const repository = new SQLiteRankingRepository(databasePath());
+    const queuedRequest = request("conversation-a");
+    await repository.enqueueRankingTask(queuedRequest);
+    const result = rankingResult();
+    await repository.persistRankingRun({
+      ownerId: userA,
+      idempotencyKey: rankingRunIdempotencyKey({
+        provider: queuedRequest.provider,
+        conversation: queuedRequest.conversation,
+        weights: DEFAULT_WEIGHTS,
+      }),
+      provider: queuedRequest.provider,
+      weights: DEFAULT_WEIGHTS,
+      conversation: queuedRequest.conversation,
+      input: result.input,
+      result: result.result,
+    });
+
+    expect(
+      await repository.renameConversation(userA, "conversation-a", "quarterly-review"),
+    ).toBe(true);
+    expect(await repository.listRankingTasks(userA)).toEqual([
+      expect.objectContaining({
+        externalConversationId: "quarterly-review",
+        request: expect.objectContaining({
+          conversation: expect.objectContaining({ conversationId: "quarterly-review" }),
+        }),
+      }),
+    ]);
+    expect(await repository.latestRankingState(userA)).toMatchObject({
+      run: { conversation: { conversationId: "quarterly-review" } },
+    });
+    repository.close();
+  });
+
+  it("marks the exact reviewed run and its queue task complete after a decision", async () => {
+    const repository = new SQLiteRankingRepository(databasePath());
+    const queuedRequest = request("conversation-a");
+    const queued = await repository.enqueueRankingTask(queuedRequest);
+    const result = rankingResult(true);
+    const reference = await repository.persistRankingRun({
+      ownerId: userA,
+      idempotencyKey: rankingRunIdempotencyKey({
+        provider: queuedRequest.provider,
+        conversation: queuedRequest.conversation,
+        weights: DEFAULT_WEIGHTS,
+      }),
+      provider: queuedRequest.provider,
+      weights: DEFAULT_WEIGHTS,
+      conversation: queuedRequest.conversation,
+      input: result.input,
+      result: result.result,
+    });
+    result.persistence = {
+      enabled: true,
+      identified: true,
+      rankingRunId: reference.id,
+      state: "human_review",
+    };
+    await repository.completePendingRankingTask(
+      userA,
+      { id: queued.id, revision: queued.revision },
+      result,
+    );
+
+    expect(await repository.resolveRankingReview(userA, reference.id)).toBe(true);
+    expect(await repository.listRankingTasks(userA)).toEqual([
+      expect.objectContaining({ id: queued.id, state: "decided" }),
+    ]);
+    expect(await repository.latestRankingState(userA)).toMatchObject({
+      reference: { id: reference.id, state: "decided" },
+    });
     repository.close();
   });
 
