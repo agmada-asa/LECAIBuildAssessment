@@ -19,6 +19,8 @@ Provider normalization
         ├── stable candidate keys and distinctness
         ├── grounded constraints with source IDs
         ├── embedding-assisted duplicate consolidation
+        ├── one corrective retry for a short actionable catalogue
+        ├── explicit human review when fewer than three task readings remain
         └── relevant accepted historical outcomes
         │
         ▼
@@ -210,9 +212,13 @@ earlier positive outcome while retaining that record for audit.
 Before ranking, the provider classifies the conversation as an actionable task,
 ordinary conversation, or insufficient context. Interpretations are typed as a
 task, conversation, or insufficient-context reading. An actionable-task
-assessment may contain one grounded task when the source supports one clear
-decision, and multiple task interpretations only when the source supports
-genuine alternatives. The other assessments require a compatible reading. The deterministic scorer marks
+assessment is normalized to source-grounded task readings and should contain at
+least three distinct alternatives. After semantic duplicate consolidation, a
+short actionable catalogue receives one corrective provider retry. If fewer
+than three readings still remain, the valid readings are ranked and the exact
+shortfall is routed to human review rather than filled with generated
+paraphrases. Ordinary-conversation and insufficient-context assessments may
+truthfully contain one compatible non-task reading. The deterministic scorer marks
 incompatible candidate types invalid before ordering and relative confidence.
 Legacy persisted inputs without this assessment retain the previous open ranking
 behavior.
@@ -280,13 +286,14 @@ Weight changes affect ranking influence, not the underlying evidence. Conflict b
 
 `ProviderAnalysis` is intentionally narrow:
 
-- One grounded interpretation, or two to five mutually exclusive
-  interpretations when the source supports distinct decisions.
+- Three to five source-grounded readings when possible. Actionable readings are
+  tasks; ordinary-conversation and insufficient-context readings remain non-task
+  interpretations.
 - One conversation-level actionability/recoverability assessment with grounded
   source-message IDs, known facts, and material unknowns.
 - A candidate kind (`task`, `conversation`, or `insufficient-context`) on every
-  interpretation. Actionable assessments may return one clear task or multiple
-  source-grounded alternatives; other assessments must include a compatible
+  interpretation. Actionable alternatives must be anchored in source phrases,
+  constraints, or declared unknowns; other assessments must include a compatible
   reading.
 - Semantic terms for each interpretation.
 - Canonical candidate features.
@@ -299,9 +306,12 @@ future adapter from silently replacing the application's scoring policy.
 Provider output is normalized before ranking. Candidate IDs are derived from
 titles, feature tags must use `dimension:value`, constraints must match a source
 message and a candidate feature dimension, and substantially overlapping candidates
-are merged. Assessed logs may proceed with one grounded compatible result;
-legacy provider snapshots without an actionability assessment retain the older
-three-candidate catalogue requirement. Message order and
+are merged. Assessed logs that arrive with a short compatible catalogue are sent
+through one corrective provider retry only when the assessment is actionable;
+the application never synthesizes additional candidates from constraints,
+messages, facts, or unknowns. A remaining shortfall becomes a mandatory review
+reason. Legacy provider snapshots without an actionability assessment retain
+the older three-candidate catalogue requirement. Message order and
 source IDs carry provenance. Explicit assistant/system/tool authors are not
 scored as new instructions; role-less logs intentionally retain all messages.
 Constraint display uses the exact matched source phrase; provider-written labels

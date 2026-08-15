@@ -15,9 +15,12 @@ against the prior conversation state rather than treated as isolated messages.
 1. A reviewer starts a conversation or imports a JSON, CSV, or TXT log in the
    Next.js workbench.
 2. The log is normalized into the canonical `ConversationLog` contract.
-3. The selected analysis provider classifies the conversation and proposes one
-   clear reading or multiple competing readings grounded in source messages.
-4. Provider output is normalized, deduplicated, and validated before ranking.
+3. The selected analysis provider classifies the conversation and proposes
+   source-grounded readings, including stale or underspecified task rivals and
+   compatible non-task readings for missing-context or ordinary conversations.
+4. Provider output is normalized and deduplicated. An actionable catalogue with
+   fewer than three distinct readings receives one corrective provider retry;
+   any remaining shortfall is preserved and marked for human review.
 5. The ranking engine scores each interpretation on semantic, constraint, and
    history axes, applies the configured weights, and computes relative
    confidence.
@@ -131,6 +134,8 @@ Resolve does not always guess. It routes work to human review when:
 - The winning task family has low relative confidence.
 - The top task families are too close.
 - The context is insufficient to recover the underlying action.
+- Fewer than three distinct actionable-task readings remain after one
+  corrective provider retry.
 - A latest task switch is not represented by any current candidate.
 
 The system also separates actionability from ranking. Ordinary conversation can
@@ -142,7 +147,10 @@ insufficient-context result instead of forcing a false task choice.
 Live providers return structured output only. Normalization rejects ungrounded
 assessment message IDs, ungrounded constraints, malformed feature tags,
 contradictory constraint rules, padded paraphrases, and task boundaries that do
-not contain a grounded new task request.
+not contain a grounded new task request. The application does not manufacture
+rivals when a provider returns only one or two actionable readings. It retries
+the provider once after semantic deduplication, then ranks the valid readings
+with an explicit shortfall warning and mandatory review state.
 
 The Codex provider runs as a child process with argument arrays, stdin, a
 read-only sandbox, and an environment allowlist. OpenAI-compatible provider

@@ -275,7 +275,7 @@ describe("POST /api/rank", () => {
     expect(body.result.rankingChange.previousWinner.id).not.toMatch(/fabricated/);
   });
 
-  it("allows one grounded insufficient-context reading to reach human review", async () => {
+  it("keeps one grounded insufficient-context reading without padding", async () => {
     getProviderStatuses.mockResolvedValue([
       { id: "codex", name: "Codex CLI", available: true },
     ]);
@@ -315,10 +315,16 @@ describe("POST /api/rank", () => {
 
     expect(response.status).toBe(200);
     expect(body.result.ranking).toHaveLength(1);
+    expect(body.input.interpretations.map((candidate: { kind: string; title: string }) => ({
+      kind: candidate.kind,
+      title: candidate.title,
+    }))).toEqual([
+      { kind: "insufficient-context", title: "Insufficient context" },
+    ]);
     expect(body.result.humanReviewReason).toMatchObject({ code: "insufficient_context" });
   });
 
-  it("allows one grounded actionable task without requesting invented alternatives", async () => {
+  it("retries one grounded actionable task then reports an honest shortfall", async () => {
     getProviderStatuses.mockResolvedValue([
       { id: "codex", name: "Codex CLI", available: true },
     ]);
@@ -348,7 +354,7 @@ describe("POST /api/rank", () => {
         label: "Send raw rows as CSV",
       }],
       taskBoundaries: [],
-      notes: "No competing source-grounded decision exists.",
+      notes: "The provider returned one best reading.",
     });
 
     const response = await POST(request({ provider: "codex", conversation }));
@@ -356,8 +362,88 @@ describe("POST /api/rank", () => {
 
     expect(response.status).toBe(200);
     expect(body.result.ranking).toHaveLength(1);
-    expect(body.result.uncertain).toBe(false);
-    expect(analyseWithCodex).toHaveBeenCalledTimes(1);
+    expect(body.input.interpretations.map((candidate: { title: string }) => candidate.title)).toEqual([
+      "Export the raw rows as CSV",
+    ]);
+    expect(body.result.uncertain).toBe(true);
+    expect(body.result.humanReviewReason).toMatchObject({
+      code: "insufficient_interpretations",
+      message: expect.stringMatching(/only 1 distinct interpretation.*at least 3/i),
+    });
+    expect(analyseWithCodex).toHaveBeenCalledTimes(2);
+    expect(analyseWithCodex.mock.calls[1][1]).toMatch(
+      /contained only 1 distinct interpretation/i,
+    );
+  });
+
+  it("uses three distinct interpretations returned by the corrective retry", async () => {
+    getProviderStatuses.mockResolvedValue([
+      { id: "codex", name: "Codex CLI", available: true },
+    ]);
+    const assessment = {
+      kind: "actionable-task" as const,
+      summary: "The messages contain several competing task readings.",
+      evidenceMessageIds: ["M1", "M2", "M3"],
+      knownFacts: ["The user mentioned slides, a dentist appointment, and a CSV export."],
+      unknowns: [],
+    };
+    analyseWithCodex
+      .mockResolvedValueOnce({
+        conversationAssessment: assessment,
+        interpretations: [{
+          id: "csv-export",
+          kind: "task",
+          title: "Export the raw rows as CSV",
+          summary: "Send the requested raw rows in CSV format.",
+          semanticTerms: ["raw rows", "CSV export", "send CSV"],
+          features: ["format:csv"],
+        }],
+        constraints: [],
+        taskBoundaries: [],
+        notes: "The first attempt collapsed the catalogue.",
+      })
+      .mockResolvedValueOnce({
+        conversationAssessment: assessment,
+        interpretations: [
+          {
+            id: "csv-export",
+            kind: "task",
+            title: "Export the raw rows as CSV",
+            summary: "Send the requested raw rows in CSV format.",
+            semanticTerms: ["raw rows", "CSV export", "send CSV"],
+            features: ["format:csv"],
+          },
+          {
+            id: "dentist-booking",
+            kind: "task",
+            title: "Book the dentist appointment",
+            summary: "Treat the dentist booking request as the active task.",
+            semanticTerms: ["book dentist", "appointment", "next Tuesday"],
+            features: ["task:dentist-booking"],
+          },
+          {
+            id: "slides",
+            kind: "task",
+            title: "Prepare the slides",
+            summary: "Treat the earlier slide offer as the active task.",
+            semanticTerms: ["make slides", "presentation", "slides"],
+            features: ["format:slides"],
+          },
+        ],
+        constraints: [],
+        taskBoundaries: [],
+        notes: "The corrective retry returned three competing readings.",
+      });
+
+    const response = await POST(request({ provider: "codex", conversation }));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.result.ranking).toHaveLength(3);
+    expect(body.result.humanReviewReason?.code).not.toBe(
+      "insufficient_interpretations",
+    );
+    expect(analyseWithCodex).toHaveBeenCalledTimes(2);
   });
 
   it("handles no slides followed by PowerPoint after all through the demo provider", async () => {

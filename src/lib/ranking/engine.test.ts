@@ -40,6 +40,40 @@ function rule(
 }
 
 describe("rankConversation", () => {
+  it("requires human review when an actionable catalogue has fewer than three readings", () => {
+    const result = rankConversation(
+      {
+        interpretations: [{
+          id: "csv-export",
+          kind: "task",
+          title: "Export the raw rows as CSV",
+          summary: "Send the requested raw rows in CSV format.",
+          semanticTerms: ["raw rows", "CSV export", "send CSV"],
+          features: ["format:csv"],
+        }],
+        constraintRules: [rule("csv", "raw rows as CSV", "format", "csv")],
+        history: [],
+        conversationAssessment: {
+          kind: "actionable-task",
+          summary: "The user requests a CSV export.",
+          evidenceMessageIds: ["M1"],
+          knownFacts: ["The raw rows must be sent as CSV."],
+          unknowns: [],
+        },
+      },
+      [message("M1", "Send the raw rows as CSV.")],
+      DEFAULT_WEIGHTS,
+    );
+
+    expect(result.ranking).toHaveLength(1);
+    expect(result.humanReviewReason).toEqual({
+      code: "insufficient_interpretations",
+      message:
+        "Only 1 distinct interpretation could be generated. At least 3 are required, so human review is required.",
+    });
+    expect(result.uncertain).toBe(true);
+  });
+
   it("gates ordinary conversation before ranking invented tasks", () => {
     const messages = [
       message("M1", "Are we still meeting at the Italian place at 7?"),

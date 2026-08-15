@@ -94,7 +94,9 @@ export function EvidencePanel({
               <AlertTitle className="text-xs font-semibold">
                 {result.humanReviewReason?.code === "insufficient_context"
                   ? "Not enough context"
-                  : "Ask before acting"}
+                  : result.humanReviewReason?.code === "insufficient_interpretations"
+                    ? "Fewer than 3 interpretations"
+                    : "Ask before acting"}
               </AlertTitle>
               <AlertDescription className="text-xs leading-5 text-amber-900/80">
                 {result.uncertaintyReason}

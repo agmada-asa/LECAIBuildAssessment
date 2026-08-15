@@ -225,7 +225,7 @@ export async function POST(request: Request) {
         analysis = await analyseLiveProvider(
           provider,
           formatConversationForProvider(conversation),
-          "The previous response passed the JSON schema but failed normalization. For actionable-task return one grounded task when the source supports one decision, or 2-5 mutually exclusive tasks only when the source supports genuine alternatives. For ordinary-conversation or insufficient-context return at least one grounded matching interpretation. Keep every candidate kind consistent with the conversation assessment, ground assessment message IDs and every constraint phrase in the source text, repeat a meaningful source word in each constraint label, and ensure every constraint dimension appears in candidate features.",
+          "The previous response passed the JSON schema but failed normalization. For actionable-task, return 3-5 genuinely distinct task readings anchored in source phrases, constraints, or declared unknowns. For ordinary-conversation or insufficient-context, return 1-5 compatible non-task readings that separate conversational focus, unknown referents, and known facts without inventing agent work. Keep every candidate kind consistent with the conversation assessment, ground assessment message IDs and every constraint phrase in the source text, repeat a meaningful source word in each constraint label, and ensure every constraint dimension appears in candidate features.",
         );
         input = normalizeProviderAnalysis(analysis, conversation);
       } catch {
@@ -254,24 +254,41 @@ export async function POST(request: Request) {
       input.interpretations,
       embeddings,
     );
+    const requiresActionableCatalogue =
+      input.conversationAssessment?.kind === "actionable-task";
     const requiresLegacyCatalogue =
       !input.conversationAssessment ||
       input.conversationAssessment.kind === "undetermined";
     if (
-      requiresLegacyCatalogue &&
+      requiresActionableCatalogue &&
       consolidated.candidates.length < 3 &&
       provider !== "demo"
     ) {
-      analysis = await analyseLiveProvider(
-        provider,
-        formatConversationForProvider(conversation),
-        "The previous catalogue contained semantic paraphrases. Return at least three mutually exclusive decisions with conflicting canonical features where appropriate, preserve a candidate kind matching the conversation assessment, and do not pad the catalogue with differently worded versions of one deliverable.",
-      );
-      input = normalizeProviderAnalysis(analysis, conversation);
-      consolidated = await consolidateSemanticDuplicates(
-        input.interpretations,
-        embeddings,
-      );
+      const initialInput = input;
+      const initialConsolidated = consolidated;
+      const generated = consolidated.candidates.length;
+      try {
+        const retryAnalysis = await analyseLiveProvider(
+          provider,
+          formatConversationForProvider(conversation),
+          `The previous actionable catalogue contained only ${generated} distinct interpretation${generated === 1 ? "" : "s"} after grounding and semantic deduplication. Return at least 3 genuinely competing, source-grounded task interpretations. Include stale, contradicted, or materially underspecified readings where the source supports them, use conflicting canonical feature values where appropriate, and do not pad the catalogue with paraphrases of one decision.`,
+        );
+        const retryInput = normalizeProviderAnalysis(retryAnalysis, conversation);
+        const retryConsolidated = await consolidateSemanticDuplicates(
+          retryInput.interpretations,
+          embeddings,
+        );
+        if (retryConsolidated.candidates.length >= initialConsolidated.candidates.length) {
+          analysis = retryAnalysis;
+          input = retryInput;
+          consolidated = retryConsolidated;
+        }
+      } catch {
+        // The first catalogue is valid and grounded. Preserve it so the user
+        // sees the shortfall and mandatory review state instead of a 5xx error.
+        input = initialInput;
+        consolidated = initialConsolidated;
+      }
     }
     if (consolidated.candidates.length < (requiresLegacyCatalogue ? 3 : 1)) {
       return errorResponse(provider === "demo" ? 422 : 502, {

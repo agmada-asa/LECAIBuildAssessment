@@ -337,14 +337,13 @@ export function normalizeProviderAnalysis(
   const compatibleInterpretations = expectedCandidateKind
     ? interpretations.filter((candidate) => candidate.kind === expectedCandidateKind)
     : interpretations;
-  // Legacy provider snapshots without an assessment retain the old catalogue
-  // requirement. Assessed logs may truthfully expose one clear task or reading.
+  // Legacy provider snapshots retain their original strict catalogue contract.
+  // Assessed live results may remain short so the API can retry once and then
+  // report an honest human-review state instead of inventing alternatives.
   const requiresLegacyCatalogue = conversationAssessment.kind === "undetermined";
-  if (interpretations.length < (requiresLegacyCatalogue ? 3 : 1)) {
+  if (requiresLegacyCatalogue && interpretations.length < 3) {
     throw new Error(
-      requiresLegacyCatalogue
-        ? "The provider must return at least three genuinely distinct interpretations."
-        : "The provider must return a grounded interpretation matching its conversation assessment.",
+      "The provider must return at least three genuinely distinct interpretations.",
     );
   }
   if (expectedCandidateKind && compatibleInterpretations.length === 0) {
