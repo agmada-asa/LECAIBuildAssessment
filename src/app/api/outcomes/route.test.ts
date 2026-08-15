@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { repository } = vi.hoisted(() => ({
   repository: {
-    rankingRunBelongsToUser: vi.fn(),
+    rankingRunForOwner: vi.fn(),
     storeOutcome: vi.fn(),
     resolveRankingReview: vi.fn(),
   },
@@ -18,15 +18,27 @@ import { POST } from "./route";
 
 const body = {
   rankingRunId: "00000000-0000-4000-8000-000000000010",
-  domainName: "finance",
-  conversationUserId: "finance-user",
   decision: "accepted",
-  interpretation: {
-    id: "csv",
-    title: "Export CSV",
-    summary: "Send raw rows.",
-    semanticTerms: ["csv", "raw rows"],
-    features: ["format:csv"],
+  interpretationId: "csv",
+};
+
+const storedRun = {
+  ownerId: "00000000-0000-4000-8000-000000000001",
+  conversation: {
+    conversationId: "finance-review",
+    userId: "finance-user",
+    domain: { name: "finance" },
+    messages: [],
+    acceptedOutcomes: [],
+  },
+  result: {
+    ranking: [{
+      id: "csv",
+      title: "Export CSV",
+      summary: "Send raw rows.",
+      semanticTerms: ["csv", "raw rows"],
+      features: ["format:csv"],
+    }],
   },
 };
 
@@ -44,7 +56,7 @@ function request(value: unknown = body, includeDevice = true): Request {
 describe("POST /api/outcomes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    repository.rankingRunBelongsToUser.mockResolvedValue(true);
+    repository.rankingRunForOwner.mockResolvedValue(storedRun);
     repository.storeOutcome.mockResolvedValue(undefined);
     repository.resolveRankingReview.mockResolvedValue(true);
   });
@@ -57,7 +69,7 @@ describe("POST /api/outcomes", () => {
   });
 
   it("does not allow feedback against another user's ranking run", async () => {
-    repository.rankingRunBelongsToUser.mockResolvedValue(false);
+    repository.rankingRunForOwner.mockResolvedValue(undefined);
 
     const response = await POST(request());
 
@@ -85,6 +97,59 @@ describe("POST /api/outcomes", () => {
     expect(repository.resolveRankingReview).toHaveBeenCalledWith(
       "00000000-0000-4000-8000-000000000001",
       body.rankingRunId,
+    );
+  });
+
+  it("rejects a candidate that is not part of the persisted ranking", async () => {
+    const response = await POST(request({ ...body, interpretationId: "forged-candidate" }));
+
+    expect(response.status).toBe(400);
+    expect(repository.storeOutcome).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { kind: "conversation", valid: true },
+    { kind: "insufficient-context", valid: true },
+    { kind: "task", valid: false },
+  ])("does not accept $kind candidates with valid=$valid as task history", async (candidate) => {
+    repository.rankingRunForOwner.mockResolvedValue({
+      ...storedRun,
+      result: {
+        ranking: [{ ...storedRun.result.ranking[0], ...candidate }],
+      },
+    });
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(400);
+    expect(repository.storeOutcome).not.toHaveBeenCalled();
+    expect(repository.resolveRankingReview).not.toHaveBeenCalled();
+  });
+
+  it("ignores forged candidate and conversation metadata supplied by the client", async () => {
+    const response = await POST(request({
+      ...body,
+      conversationUserId: "attacker-selected-user",
+      domainName: "attacker-selected-domain",
+      interpretation: {
+        id: "csv",
+        title: "Forged title",
+        summary: "Forged summary",
+        semanticTerms: ["forged"],
+        features: ["format:forged"],
+      },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(repository.storeOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: "finance-user",
+        domainName: "finance",
+        title: "Export CSV",
+        summary: "Send raw rows.",
+        semanticTerms: ["csv", "raw rows"],
+        features: ["format:csv"],
+      }),
     );
   });
 

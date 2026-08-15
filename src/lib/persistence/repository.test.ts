@@ -46,6 +46,34 @@ function outcome(overrides: Partial<StoredTaskOutcome> = {}): StoredTaskOutcome 
 }
 
 describe("InMemoryRankingRepository", () => {
+  it("loads only the exact owner-scoped queue revision", async () => {
+    const repository = new InMemoryRankingRepository();
+    const queued = await repository.enqueueRankingTask({
+      ownerId: "owner-a",
+      provider: "demo",
+      conversation: run.conversation,
+    });
+
+    expect(
+      await repository.rankingTaskForOwner("owner-a", {
+        id: queued.id,
+        revision: queued.revision,
+      }),
+    ).toMatchObject({ id: queued.id, request: { ownerId: "owner-a" } });
+    expect(
+      await repository.rankingTaskForOwner("owner-b", {
+        id: queued.id,
+        revision: queued.revision,
+      }),
+    ).toBeUndefined();
+    expect(
+      await repository.rankingTaskForOwner("owner-a", {
+        id: queued.id,
+        revision: queued.revision + 1,
+      }),
+    ).toBeUndefined();
+  });
+
   it("persists message array order and makes repeated runs idempotent", async () => {
     const repository = new InMemoryRankingRepository();
 
@@ -58,8 +86,10 @@ describe("InMemoryRankingRepository", () => {
       expect.objectContaining({ sourceId: "M1", position: 1 }),
     ]);
     expect(repository.inspectRuns()).toHaveLength(1);
-    expect(await repository.rankingRunBelongsToUser(first.id, "owner-a")).toBe(true);
-    expect(await repository.rankingRunBelongsToUser(first.id, "owner-b")).toBe(false);
+    expect(await repository.rankingRunForOwner(first.id, "owner-a")).toMatchObject({
+      conversation: { conversationId: "conversation-1" },
+    });
+    expect(await repository.rankingRunForOwner(first.id, "owner-b")).toBeUndefined();
     expect(await repository.latestRankingState("owner-a")).toMatchObject({
       reference: { id: first.id },
       run: { conversation: { conversationId: "conversation-1" } },
@@ -91,6 +121,35 @@ describe("InMemoryRankingRepository", () => {
 
     expect(matches.map((match) => match.id)).toEqual(["outcome-a", "less-similar"]);
     expect(matches[0].similarity).toBe(1);
+  });
+
+  it("keeps only the latest accepted outcome active for one ranking run", async () => {
+    const repository = new InMemoryRankingRepository();
+    await repository.storeOutcome(outcome({
+      id: "first-choice",
+      sourceRankingRunId: "run-1",
+      interpretationKey: "csv",
+    }));
+    await repository.storeOutcome(outcome({
+      id: "revised-choice",
+      sourceRankingRunId: "run-1",
+      interpretationKey: "slides",
+      title: "Prepare slides",
+      summary: "Prepare a presentation for finance.",
+      semanticTerms: ["slides", "presentation"],
+    }));
+
+    const matches = await repository.findSimilarOutcomes({
+      ownerId: "owner-a",
+      userId: "user-a",
+      domainName: "finance",
+      embedding: [1, 0, 0],
+      embeddingModel: "test",
+      embeddingVersion: "1",
+      limit: 5,
+    });
+
+    expect(matches.map((match) => match.id)).toEqual(["revised-choice"]);
   });
 
   it("does not contaminate a domain-less apology task with structured-data history", async () => {

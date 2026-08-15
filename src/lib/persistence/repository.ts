@@ -6,7 +6,7 @@
  */
 
 import { cosineSimilarity } from "@/lib/embeddings/similarity";
-import { DEFAULT_WEIGHTS } from "@/lib/ranking/scenarios";
+import { DEFAULT_WEIGHTS } from "@/lib/ranking/policy";
 import {
   queueResultFromPersistedRun,
   rankingRunIdempotencyKey,
@@ -91,6 +91,20 @@ export class InMemoryRankingRepository implements RankingRepository {
 
   /** Inserts or replaces an outcome by stable outcome ID. */
   async storeOutcome(outcome: StoredTaskOutcome): Promise<void> {
+    if (outcome.accepted && outcome.sourceRankingRunId) {
+      // One ranking run represents one user decision. Retain earlier feedback
+      // for auditability, but prevent it from contributing positive history.
+      this.outcomes.forEach((existing) => {
+        if (
+          existing.ownerId === outcome.ownerId &&
+          existing.sourceRankingRunId === outcome.sourceRankingRunId &&
+          existing.id !== outcome.id &&
+          existing.accepted
+        ) {
+          existing.accepted = false;
+        }
+      });
+    }
     this.outcomes.set(outcome.id, { ...outcome, embedding: [...outcome.embedding] });
   }
 
@@ -139,18 +153,21 @@ export class InMemoryRankingRepository implements RankingRepository {
       .slice(0, query.limit);
   }
 
-  /** Confirms ownership through the run's stored conversation. */
-  async rankingRunBelongsToUser(
+  /** Loads an exact run only when its stored conversation belongs to the owner. */
+  async rankingRunForOwner(
     rankingRunId: string,
     ownerId: string,
-  ): Promise<boolean> {
+  ): Promise<PersistedRankingRun | undefined> {
     const run = [...this.runs.values()].find((item) => item.id === rankingRunId);
     const conversation = run
       ? [...this.conversations.values()].find(
           (item) => item.id === run.conversationId,
         )
       : undefined;
-    return conversation?.ownerId === ownerId;
+    const payload = conversation?.ownerId === ownerId
+      ? this.runPayloads.get(rankingRunId)
+      : undefined;
+    return payload ? structuredClone(payload) : undefined;
   }
 
   /** Returns the most recently inserted run for one user. */
@@ -222,6 +239,20 @@ export class InMemoryRankingRepository implements RankingRepository {
     return [...this.queue.values()]
       .filter((task) => task.request.ownerId === ownerId)
       .map((task) => structuredClone(task));
+  }
+
+  /** Loads an immutable copy of one owner-scoped queue revision. */
+  async rankingTaskForOwner(
+    ownerId: string,
+    reference: Pick<QueuedRankingTask, "id" | "revision">,
+  ): Promise<QueuedRankingTask | undefined> {
+    const task = [...this.queue.values()].find(
+      (item) =>
+        item.id === reference.id &&
+        item.revision === reference.revision &&
+        item.request.ownerId === ownerId,
+    );
+    return task ? structuredClone(task) : undefined;
   }
 
   /** Repairs pre-fix pending tasks from exact owner-scoped persisted runs. */

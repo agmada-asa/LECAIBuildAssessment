@@ -25,10 +25,11 @@ import {
   type ProviderId,
 } from "@/lib/providers/types";
 import type { RankErrorResponse, RankSuccessResponse } from "@/lib/ranking/api";
+import { selectActiveTaskMessages } from "@/lib/ranking/constraints";
 import { rankConversationAsync } from "@/lib/ranking/engine";
-import { rankingInputSchema } from "@/lib/ranking/schema";
-import { DEFAULT_WEIGHTS } from "@/lib/ranking/scenarios";
+import { DEFAULT_WEIGHTS } from "@/lib/ranking/policy";
 import { normaliseWeights } from "@/lib/ranking/scoring";
+import type { RankingInput } from "@/lib/ranking/types";
 
 export const runtime = "nodejs";
 
@@ -50,7 +51,6 @@ const requestSchema = z.object({
   provider: providerSchema,
   conversation: conversationLogSchema,
   weights: weightsSchema.optional(),
-  previousInput: rankingInputSchema.optional(),
   queuedTask: z.object({
     id: z.string().trim().min(1).max(200),
     revision: z.number().int().positive(),
@@ -121,13 +121,38 @@ export async function POST(request: Request) {
     });
   }
 
-  const {
+  let {
     provider,
     conversation,
     weights = DEFAULT_WEIGHTS,
-    previousInput,
-    queuedTask,
   } = parsed.data;
+  const { queuedTask } = parsed.data;
+  const repository = createSQLiteRepository();
+  const deviceId = deviceIdFromRequest(request);
+  const canPersist = Boolean(deviceId);
+  let previousInput: RankingInput | undefined;
+
+  if (queuedTask) {
+    if (!deviceId) {
+      return errorResponse(409, {
+        code: "invalid_queue_revision",
+        message: "The queued ranking revision is unavailable to this browser.",
+      });
+    }
+    const queued = await repository.rankingTaskForOwner(deviceId, queuedTask);
+    if (!queued) {
+      return errorResponse(409, {
+        code: "invalid_queue_revision",
+        message: "The queued ranking revision is missing, stale, or belongs to another browser.",
+      });
+    }
+    // A queue reference is an authority-bearing server snapshot. Ignore mutable
+    // request fields so comparisons and persistence use the exact same revision.
+    provider = queued.request.provider;
+    conversation = queued.request.conversation;
+    weights = queued.request.weights ?? DEFAULT_WEIGHTS;
+    previousInput = queued.request.previousInput;
+  }
   let analysis: ProviderAnalysis;
 
   if (provider === "demo") {
@@ -187,26 +212,23 @@ export async function POST(request: Request) {
         analysis = await analyseLiveProvider(
           provider,
           formatConversationForProvider(conversation),
-          "The previous response passed the JSON schema but failed normalization. Return at least three genuinely distinct interpretations, include a candidate kind matching the conversation assessment, ground assessment message IDs and every constraint phrase in the source text, and ensure every constraint dimension appears in candidate features.",
+          "The previous response passed the JSON schema but failed normalization. For actionable-task return at least three genuinely distinct task interpretations; for ordinary-conversation or insufficient-context return at least one grounded matching interpretation. Keep every candidate kind consistent with the conversation assessment, ground assessment message IDs and every constraint phrase in the source text, repeat a meaningful source word in each constraint label, and ensure every constraint dimension appears in candidate features.",
         );
         input = normalizeProviderAnalysis(analysis, conversation);
       } catch {
         return errorResponse(502, {
           code: "invalid_provider_output",
-          message: "The selected provider did not return three grounded, distinct interpretations after one corrective retry.",
+          message: "The selected provider did not return a grounded candidate catalogue after one corrective retry.",
         });
       }
     } else {
       return errorResponse(502, {
         code: "invalid_provider_output",
-        message: "The selected provider did not return three grounded, distinct interpretations.",
+        message: "The selected provider did not return a grounded candidate catalogue.",
       });
     }
   }
 
-  const repository = createSQLiteRepository();
-  const deviceId = deviceIdFromRequest(request);
-  const canPersist = Boolean(deviceId);
   const persistence: RankSuccessResponse["persistence"] = {
     enabled: true,
     identified: canPersist,
@@ -219,7 +241,15 @@ export async function POST(request: Request) {
       input.interpretations,
       embeddings,
     );
-    if (consolidated.candidates.length < 3 && provider !== "demo") {
+    const requiresCompetingTasks =
+      input.conversationAssessment?.kind === "actionable-task" ||
+      !input.conversationAssessment ||
+      input.conversationAssessment.kind === "undetermined";
+    if (
+      requiresCompetingTasks &&
+      consolidated.candidates.length < 3 &&
+      provider !== "demo"
+    ) {
       analysis = await analyseLiveProvider(
         provider,
         formatConversationForProvider(conversation),
@@ -231,19 +261,26 @@ export async function POST(request: Request) {
         embeddings,
       );
     }
-    if (consolidated.candidates.length < 3) {
+    if (consolidated.candidates.length < (requiresCompetingTasks ? 3 : 1)) {
       return errorResponse(provider === "demo" ? 422 : 502, {
         code:
           provider === "demo"
             ? "candidate_generation_unavailable"
             : "invalid_provider_output",
         message:
-          "Candidate generation did not produce three genuinely distinct decisions after semantic consolidation.",
+          requiresCompetingTasks
+            ? "Candidate generation did not produce three genuinely distinct decisions after semantic consolidation."
+            : "Candidate generation did not produce a grounded reading after semantic consolidation.",
       });
     }
     input = { ...input, interpretations: consolidated.candidates };
     if (canPersist && deviceId) {
-      const historyText = conversation.messages.map((message) => message.text).join(" ");
+      // Retrieval and scoring must describe the same current task. Exclude
+      // assistant content and every user task superseded by the latest boundary.
+      const historyText = selectActiveTaskMessages(
+        conversation.messages,
+        input.taskBoundaries,
+      ).map((message) => message.text).join(" ");
       const preparable = embeddings as Partial<PreparableEmbeddingProvider>;
       if (preparable.prepare) await preparable.prepare([historyText]);
       const [historyEmbedding] = embeddings.embed([historyText]);

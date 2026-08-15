@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { cosineSimilarity } from "@/lib/embeddings/similarity";
-import { DEFAULT_WEIGHTS } from "@/lib/ranking/scenarios";
+import { DEFAULT_WEIGHTS } from "@/lib/ranking/policy";
 import {
   queueResultFromPersistedRun,
   rankingRunIdempotencyKey,
@@ -26,7 +26,7 @@ import type {
 } from "./types";
 
 type RunRow = { id: string; conversation_id: string; payload: string; state: string };
-type OutcomeRow = { payload: string };
+type OutcomeRow = { id?: string; payload: string };
 type QueueRow = {
   id: string;
   external_id: string;
@@ -128,13 +128,47 @@ export class SQLiteRankingRepository implements RankingRepository {
     return { id, conversationId, state, duplicate: false };
   }
 
-  /** Inserts or replaces feedback by its stable event identifier. */
+  /** Atomically retains one active accepted decision per source ranking run. */
   async storeOutcome(outcome: StoredTaskOutcome): Promise<void> {
-    this.database.prepare(`
-      INSERT INTO task_outcomes (id, user_id, domain_name, embedding_model, embedding_version, payload, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at
-    `).run(outcome.id, outcome.ownerId, outcome.domainName ?? null, outcome.embeddingModel, outcome.embeddingVersion, JSON.stringify(outcome), new Date().toISOString());
+    const now = new Date().toISOString();
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      if (outcome.accepted && outcome.sourceRankingRunId) {
+        const rows = this.database.prepare(
+          "SELECT id, payload FROM task_outcomes WHERE user_id = ?",
+        ).all(outcome.ownerId) as Required<OutcomeRow>[];
+        rows.forEach((row) => {
+          const existing = JSON.parse(row.payload) as StoredTaskOutcome;
+          if (
+            existing.id !== outcome.id &&
+            existing.accepted &&
+            existing.sourceRankingRunId === outcome.sourceRankingRunId
+          ) {
+            existing.accepted = false;
+            this.database.prepare(
+              "UPDATE task_outcomes SET payload = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+            ).run(JSON.stringify(existing), now, row.id, outcome.ownerId);
+          }
+        });
+      }
+      this.database.prepare(`
+        INSERT INTO task_outcomes (id, user_id, domain_name, embedding_model, embedding_version, payload, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at
+      `).run(
+        outcome.id,
+        outcome.ownerId,
+        outcome.domainName ?? null,
+        outcome.embeddingModel,
+        outcome.embeddingVersion,
+        JSON.stringify(outcome),
+        now,
+      );
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   /** Atomically resolves an owned review run and the queue result that names it. */
@@ -189,13 +223,16 @@ export class SQLiteRankingRepository implements RankingRepository {
       .slice(0, query.limit);
   }
 
-  /** Confirms that a run belongs to the requesting browser profile. */
-  async rankingRunBelongsToUser(rankingRunId: string, ownerId: string): Promise<boolean> {
+  /** Loads an exact run only when it belongs to the requesting browser profile. */
+  async rankingRunForOwner(
+    rankingRunId: string,
+    ownerId: string,
+  ): Promise<PersistedRankingRun | undefined> {
     const row = this.database.prepare(`
-      SELECT r.id FROM ranking_runs r JOIN conversations c ON c.id = r.conversation_id
+      SELECT r.payload FROM ranking_runs r JOIN conversations c ON c.id = r.conversation_id
       WHERE r.id = ? AND c.user_id = ?
-    `).get(rankingRunId, ownerId);
-    return Boolean(row);
+    `).get(rankingRunId, ownerId) as { payload: string } | undefined;
+    return row ? JSON.parse(row.payload) as PersistedRankingRun : undefined;
   }
 
   /** Returns the newest complete snapshot owned by a browser profile. */
@@ -274,6 +311,17 @@ export class SQLiteRankingRepository implements RankingRepository {
       "SELECT * FROM queue_tasks WHERE user_id = ? ORDER BY updated_at DESC, id DESC",
     ).all(ownerId) as QueueRow[];
     return rows.map(queueTaskFromRow);
+  }
+
+  /** Loads one exact owner-scoped queue revision for server-side request binding. */
+  async rankingTaskForOwner(
+    ownerId: string,
+    reference: Pick<QueuedRankingTask, "id" | "revision">,
+  ): Promise<QueuedRankingTask | undefined> {
+    const row = this.database.prepare(`
+      SELECT * FROM queue_tasks WHERE id = ? AND user_id = ? AND revision = ?
+    `).get(reference.id, ownerId, reference.revision) as QueueRow | undefined;
+    return row ? queueTaskFromRow(row) : undefined;
   }
 
   /** Repairs legacy pending tasks only from exact owner-scoped persisted runs. */

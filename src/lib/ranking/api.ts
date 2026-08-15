@@ -9,8 +9,6 @@ export type RankRequest = {
   provider: ProviderId;
   conversation: ConversationLog;
   weights?: SignalWeights;
-  /** Normalized catalogue shown by the preceding run, used for truthful deltas. */
-  previousInput?: RankingInput;
   /** Exact pending queue revision that should receive this direct result. */
   queuedTask?: QueuedTaskReference;
 };
@@ -45,6 +43,7 @@ export type RankErrorResponse = {
       | "provider_rate_limited"
       | "invalid_provider_output"
       | "candidate_generation_unavailable"
+      | "invalid_queue_revision"
       | "embedding_failure";
     message: string;
     issues?: Array<{ path: string; message: string }>;
