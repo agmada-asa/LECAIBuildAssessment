@@ -133,6 +133,10 @@
   html {
     @apply font-sans;
   }
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]):not([disabled]) {
+    cursor: pointer;
+  }
 }
 
 @layer utilities {

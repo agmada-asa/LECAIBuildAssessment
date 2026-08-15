@@ -237,7 +237,7 @@ export function TaskSidebar({
         <button
           type="button"
           aria-label="Close task sidebar overlay"
-          className="fixed inset-0 top-16 z-20 bg-black/20 lg:hidden"
+          className="fixed inset-0 top-16 z-20 cursor-pointer bg-black/20 lg:hidden"
           onClick={() => setExpanded(false)}
         />
       )}
@@ -313,7 +313,7 @@ export function TaskSidebar({
                     aria-current={active ? "page" : undefined}
                     title={`${displayConversationId}: ${status.label}`}
                     className={cn(
-                      "flex size-10 items-center justify-center transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      "flex size-10 cursor-pointer items-center justify-center transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                       active && "bg-primary/10",
                     )}
                     onClick={() => onSelectConversation(presentedTask)}
@@ -346,7 +346,7 @@ export function TaskSidebar({
                       type="button"
                       aria-label={`Open ${displayConversationId}`}
                       aria-current={active ? "page" : undefined}
-                      className="w-full text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      className="w-full cursor-pointer text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       onClick={() => onSelectConversation(presentedTask)}
                     >
                       <p className="truncate text-sm font-medium">{displayConversationId}</p>

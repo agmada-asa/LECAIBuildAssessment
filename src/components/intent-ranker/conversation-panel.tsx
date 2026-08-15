@@ -146,7 +146,7 @@ export function ConversationPanel({
         <button
           type="button"
           onClick={onReset}
-          className="flex w-full items-center justify-center gap-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2"
+          className="flex w-full cursor-pointer items-center justify-center gap-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2"
         >
           <HugeiconsIcon icon={Refresh01Icon} className="size-3.5" strokeWidth={2} />
           Reset conversation
