@@ -11,11 +11,11 @@ Canonical ConversationLog (JSON / CSV / TXT import)
 Selected provider → actionability/recoverability assessment
         │
         ▼
-ProviderAnalysis (3–5 typed candidates)
+ProviderAnalysis (3–5 task candidates, or 1–5 non-task readings)
         │
         ▼
 Provider normalization
-        ├── assessment evidence and matching candidate type
+        ├── assessment evidence and compatible candidate types
         ├── stable candidate keys and distinctness
         ├── grounded constraints with source IDs
         ├── embedding-assisted duplicate consolidation
@@ -44,18 +44,28 @@ Ranked candidates + relative confidence
 The application—not the model—owns conversational state. Every imported format
 is converted to `ConversationLog`, and a ranking run receives the full ordered
 message list, provider-normalized candidates, active policy weights, and accepted
-history. It also recomputes the immediately previous turn so movement can be
-explained accurately. Import entries are never sorted; they receive canonical
+history. It also recomputes the immediately previous turn, using the preceding
+server-owned normalized input when a queued revision has one and otherwise
+scoring the current catalogue retrospectively against the conversation prefix.
+Complete initial imports therefore show the latest message's rank and signal
+movement without requiring the reviewer to append that message again. Import
+entries are never sorted; they receive canonical
 `M1`, `M2` IDs in source order so repeated or role-like source labels cannot
 invalidate a conversation.
 
 The unified API returns the normalized ranking input with the initial result.
 The browser can therefore apply weight changes deterministically without another
 provider call, while follow-up messages still rerun candidate extraction because
-they may introduce a genuinely new interpretation. A follow-up also sends the
-preceding normalized input back through the validated API boundary. Previous
-scores and winners are therefore recomputed from the catalogue the user actually
-saw, while new or removed candidates are described without fabricated deltas.
+they may introduce a genuinely new interpretation. A follow-up first creates an
+owner-scoped queued revision; the ranking endpoint loads its preceding normalized
+input from that exact server-owned revision instead of accepting comparison state
+from the browser. Previous scores and winners are therefore recomputed from the
+catalogue the user actually saw. Candidate continuity treats exact IDs as lookup
+hints and accepts them only when candidate kind and canonical feature values are
+compatible. It then matches provider paraphrases using canonical features,
+title/summary overlap, and semantic terms, so rewording does not masquerade as
+addition or removal while a reused title cannot hide a changed decision. New or
+removed decisions are described without fabricated deltas.
 
 Provider requests are abortable and sequence-tagged in the browser workflow.
 Changing or resetting the visible conversation invalidates pending work, so a
@@ -70,14 +80,15 @@ ID and revision, allowing its successful result to commit that pending snapshot
 without a second provider call. A bounded callable worker remains available for
 pending and retried work; it claims leased tasks, commits by revision/token
 compare-and-swap, recovers expired processing leases after a restart, and
-reranks only the changed conversation. A collapsible task sidebar shows waiting,
-analyzing, review, complete, and failed states; while work is waiting or
-analyzing, it polls the owner-scoped queue every three seconds with sequential
-requests and stops after all visible work reaches a terminal state. It retries
-failures and restores completed conversations into the workbench without
-rerunning analysis. Queue reads also reconcile legacy pending rows from an exact
-persisted idempotency key; they never promote a merely similar or newer
-conversation revision.
+reranks only the changed conversation. While the sidebar is monitoring pending
+work it automatically invokes that bounded worker; the manual resume action
+remains a recovery control. A collapsible task sidebar shows waiting, analyzing,
+review, complete, and failed states. While work is waiting or analyzing, it polls
+the owner-scoped queue every three seconds with sequential requests and stops
+after all visible work reaches a terminal state. It retries failures and restores
+completed conversations into the workbench without rerunning analysis. Queue
+reads also reconcile legacy pending rows from an exact persisted idempotency key;
+they never promote a merely similar or newer conversation revision.
 
 The task sidebar renders flat, divided navigation rows. Conversation renames are
 optimistic in the client and transactional in persistence: the queue identity,
@@ -114,7 +125,7 @@ commitment does not displace the meaning of the exchange as a whole.
 
 The application accepts only a pinned OpenAI-compatible API model and fails
 closed when its configuration is incomplete. The deterministic feature hash is
-an injected unit-test fixture, not a selectable runtime, production model, or
+an injected test provider, not a selectable runtime, production model, or
 rollback. The cache namespace includes provider,
 model, revision, dimensions, and normalized input. Model changes produce an
 explicit re-embedding plan and tagged cosine rejects incompatible vectors. The
@@ -148,8 +159,10 @@ known topics. `ProviderAnalysis.taskBoundaries` names the exact source message
 where an unrelated replacement begins and explains the semantic change. The
 ranker then supersedes every earlier active dimension before applying the new
 message's provider-defined constraints. For a cue-free switch, normalization
-requires a grounded required `topic` or `task` constraint in the replacement
-message; explicit reset wording remains sufficient on its own.
+requires both a grounded required `topic` or `task` constraint and an actionable
+instruction in the replacement message. Actionable instructions include direct
+requests and declarations such as “the task is …” or “we need …”; explicit reset
+wording remains sufficient on its own.
 Semantic and historical scores are calculated from the active task's messages
 only, while the full conversation remains available for the constraint audit
 trail. Providers are instructed to emit a canonical `topic` or `task` dimension,
@@ -164,29 +177,44 @@ constraint extraction. The same safeguards apply to deterministic whole-task
 reset cues, so quoted or negated text such as `do not ignore the previous task`
 cannot clear active state. Each reframe retains exact old and replacement
 constraint objects, matched source text, and source-message IDs.
+When a constraint phrase grounds its canonical dimension/value but the provider
+paraphrases the display label, normalization uses the exact source phrase as the
+label. If neither the label nor canonical identity is grounded, normalization
+rejects the catalogue for corrective provider retry. It never silently removes
+the user's explicit instruction.
 
 ## Historical score
 
 Historical examples are accepted or corrected outcomes, not merely earlier
 chat messages. SQLite retrieval first filters by browser owner, imported user,
 exact domain, acceptance state, and model identity, then calculates cosine
-similarity and retains outcome provenance. The scorer maps
+similarity and retains outcome provenance. Its query embedding uses the same
+active user-task message selection as scoring, excluding assistant messages and
+user tasks superseded by the latest grounded task boundary. The scorer maps
 that outcome to each current candidate by embedding similarity, so generated
 candidate IDs do not need to match historical IDs. This keeps historical
 pattern matching distinct from current-conversation semantic similarity.
 Saving either an acceptance or correction also atomically changes the exact
 reviewed ranking run and matching queue snapshot from `human_review` to
 `decided`; unrelated or newer queue revisions are not changed.
+The feedback endpoint accepts only the saved run ID, selected candidate ID,
+decision, and optional correction. Candidate text, imported user, and domain are
+loaded from the owner-scoped persisted run so client-supplied metadata cannot
+poison future history.
+Only valid task candidates can be accepted as positive task history. A later
+acceptance or correction from the same ranking run atomically deactivates the
+earlier positive outcome while retaining that record for audit.
 
 ## Confidence and abstention
 
 Before ranking, the provider classifies the conversation as an actionable task,
 ordinary conversation, or insufficient context. Interpretations are typed as a
-task, conversation, or insufficient-context reading, and normalization requires
-at least one candidate compatible with the assessment. The deterministic scorer
-marks incompatible candidate types invalid before ordering and relative
-confidence. Legacy persisted inputs without this assessment retain the previous
-open ranking behavior.
+task, conversation, or insufficient-context reading. An actionable-task
+assessment requires at least three distinct task interpretations; the other
+assessments require a compatible reading. The deterministic scorer marks
+incompatible candidate types invalid before ordering and relative confidence.
+Legacy persisted inputs without this assessment retain the previous open ranking
+behavior.
 
 An ordinary-conversation result is a valid outcome rather than an error or a
 manufactured task. An insufficient-context result is always routed to review
@@ -199,17 +227,25 @@ Weighted evidence scores are converted to relative candidate confidence with
 softmax at temperature `0.17`. This makes the ordering legible but does not
 establish empirical calibration. For the review decision, candidates with an
 overlapping task title and at least three and 70% shared canonical features are
-grouped into a task family. The family receives the sum of its candidates'
-relative confidence, making review stable when a provider emits multiple
-framings of the same explicit task. Candidate scores remain separate in the
-audit output.
+grouped into a task family only when they do not choose conflicting values for
+any feature dimension. Grouping uses complete linkage: a candidate must match
+every member already in a family. A vague candidate therefore cannot transitively
+bridge two mutually exclusive decisions. The family receives the sum of its
+candidates' relative confidence, making review stable when a provider emits
+multiple framings of the same explicit task without hiding mutually exclusive
+decisions. Candidate scores remain separate in the audit output.
+
+The influential-axis explanation and clarification question compare the
+winning family with its strongest alternative family, never with another
+framing already counted as the same decision.
 
 The abstention layer looks at evidence sufficiency, winning task-family
 confidence, and the top-family margin. It is deliberately separate from
 candidate generation, so any provider must obey the same human-review policy.
 
 Review output includes a stable reason code and a clarification question based
-on the first differing top-two feature dimension. A provider-grounded task
+on the first feature dimension that differs from the strongest competing task
+family. A provider-grounded task
 switch is also forced to review when none of the current candidates represents
 the new required topic/task feature; stale candidates cannot remain decision
 ready.
@@ -247,7 +283,8 @@ Weight changes affect ranking influence, not the underlying evidence. Conflict b
 - One conversation-level actionability/recoverability assessment with grounded
   source-message IDs, known facts, and material unknowns.
 - A candidate kind (`task`, `conversation`, or `insufficient-context`) on every
-  interpretation, including at least one candidate matching the assessment.
+  interpretation. Actionable assessments must return three to five task
+  interpretations; other assessments must include a compatible reading.
 - Semantic terms for each interpretation.
 - Canonical candidate features.
 - Extracted constraints grounded in conversation phrases.
@@ -258,8 +295,10 @@ future adapter from silently replacing the application's scoring policy.
 
 Provider output is normalized before ranking. Candidate IDs are derived from
 titles, feature tags must use `dimension:value`, constraints must match a source
-message and a candidate feature dimension, substantially overlapping candidates
-are merged, and fewer than three distinct results are rejected. Message order and
+message and a candidate feature dimension, and substantially overlapping candidates
+are merged. Actionable-task assessments are rejected when fewer than three
+distinct task results remain; ordinary-conversation and insufficient-context
+assessments may proceed with one grounded compatible reading. Message order and
 source IDs carry provenance. Explicit assistant/system/tool authors are not
 scored as new instructions; role-less logs intentionally retain all messages.
 Constraint display uses the exact matched source phrase; provider-written labels
@@ -300,8 +339,9 @@ added, removed, and unchanged sets, and every candidate receives its own rank
 explanation with available supporting and conflicting evidence. Result-level
 `rankingChange` text explains both sides of a winner change or neutrally records
 that the same winner remained first, while
-`mostInfluentialAxis` records the dominant normalised policy weight and why the
-policy prioritises it.
+`mostInfluentialAxis` records the axis with the largest weighted score advantage
+between the winning task family and its strongest alternative. The explanation
+reports both that observed contribution and the configured policy weight.
 
 It does not reveal or request hidden model reasoning. Reviewers can trace every sentence to stored values in the output model.
 
@@ -314,23 +354,17 @@ deltas, cue-free reframes, and invalid weight policies. Provider tests cover
 subprocess isolation, OpenAI-compatible key handling, normalization, retries,
 timeouts, and structured errors.
 Parser tests cover valid, incomplete, and malformed JSON, CSV, and TXT. JSDOM
-component tests cover the initial candidate list, import preview, accessible
-selection state, optional provider discovery, and the contradictory-message rank
-shift.
-
-The automated Chrome walkthrough and manual browser checks cover:
-
-- Initial ranking visibility.
-- Processing the contradictory third message.
-- Visible rank movement and reframe evidence.
-- Ambiguous scenario and clarification prompt.
-- Ranking-policy preset controls.
-- Local provider discovery.
+component tests cover the empty workbench, imported candidate list, import
+preview, accessible selection state, optional provider discovery, pending-worker
+dispatch, and contradictory-message rank shift.
 
 The 22-case labelled scorer evaluation uses fixed catalogues and gates top-one
 and escalation metrics. A separate provider-inclusive suite begins with raw
 logs and measures grounding, duplicate rate, top-one accuracy, review accuracy,
-and false review across the audited open-set/state cases. Playwright exercises
-the contradiction walkthrough, dentist/flights/apology grounding, and the
-seven-message finance resumption through the running Next.js app. The production
-build performs the final TypeScript and route compilation check.
+and false review across the audited open-set/state cases. Provider or
+normalization failures are reported separately and count against review accuracy;
+they are never treated as successful abstentions. Playwright imports its own test
+conversations to exercise contradiction handling,
+dentist/flights/apology grounding, and finance-task resumption through the
+running Next.js app. The production build performs the final TypeScript and route
+compilation check.
