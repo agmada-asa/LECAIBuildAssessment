@@ -318,6 +318,48 @@ describe("POST /api/rank", () => {
     expect(body.result.humanReviewReason).toMatchObject({ code: "insufficient_context" });
   });
 
+  it("allows one grounded actionable task without requesting invented alternatives", async () => {
+    getProviderStatuses.mockResolvedValue([
+      { id: "codex", name: "Codex CLI", available: true },
+    ]);
+    analyseWithCodex.mockResolvedValue({
+      conversationAssessment: {
+        kind: "actionable-task",
+        summary: "The latest message clearly requests a CSV export.",
+        evidenceMessageIds: ["M3"],
+        knownFacts: ["The raw rows must be sent as CSV."],
+        unknowns: [],
+      },
+      interpretations: [{
+        id: "csv-export",
+        kind: "task",
+        title: "Export the raw rows as CSV",
+        summary: "Send the requested raw rows in CSV format.",
+        semanticTerms: ["raw rows", "CSV export", "send CSV"],
+        features: ["format:csv"],
+      }],
+      constraints: [{
+        id: "csv-required",
+        phrases: ["raw rows as CSV"],
+        dimension: "format",
+        value: "csv",
+        mode: "require",
+        strength: 1,
+        label: "Send raw rows as CSV",
+      }],
+      taskBoundaries: [],
+      notes: "No competing source-grounded decision exists.",
+    });
+
+    const response = await POST(request({ provider: "codex", conversation }));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.result.ranking).toHaveLength(1);
+    expect(body.result.uncertain).toBe(false);
+    expect(analyseWithCodex).toHaveBeenCalledTimes(1);
+  });
+
   it("handles no slides followed by PowerPoint after all through the demo provider", async () => {
     const reversal = {
       ...conversation,
@@ -780,6 +822,56 @@ describe("POST /api/rank", () => {
     expect(body).toContain("provider_failure");
     expect(body).not.toContain("private/path");
     expect(body).not.toContain("secret");
+  });
+
+  it("repairs one malformed provider response before failing the analysis", async () => {
+    getProviderStatuses.mockResolvedValue([
+      { id: "codex", name: "Codex CLI", available: true },
+    ]);
+    analyseWithCodex
+      .mockRejectedValueOnce(new SyntaxError("Unexpected provider output"))
+      .mockResolvedValueOnce({
+        conversationAssessment: {
+          kind: "insufficient-context",
+          summary: "The requested action has no recoverable referent.",
+          evidenceMessageIds: ["M1"],
+          knownFacts: ["The user wants an action performed."],
+          unknowns: ["What the request refers to."],
+        },
+        interpretations: [{
+          id: "missing-referent",
+          kind: "insufficient-context",
+          title: "Insufficient context",
+          summary: "The underlying action cannot be recovered.",
+          semanticTerms: ["missing referent", "unknown action", "insufficient context"],
+          features: ["actionability:insufficient-context"],
+        }],
+        constraints: [],
+        taskBoundaries: [],
+        notes: "The repaired response is grounded.",
+      });
+
+    const response = await POST(request({ provider: "codex", conversation }));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.result.conversationAssessment.kind).toBe("insufficient-context");
+    expect(analyseWithCodex).toHaveBeenCalledTimes(2);
+    expect(analyseWithCodex.mock.calls[1][1]).toMatch(/valid structured output/i);
+  });
+
+  it("returns a structured error after malformed provider output fails repair", async () => {
+    getProviderStatuses.mockResolvedValue([
+      { id: "codex", name: "Codex CLI", available: true },
+    ]);
+    analyseWithCodex.mockRejectedValue(new SyntaxError("Unexpected provider output"));
+
+    const response = await POST(request({ provider: "codex", conversation }));
+    const body = await response.json();
+
+    expect(response.status).toBe(502);
+    expect(body.error.code).toBe("invalid_provider_output");
+    expect(analyseWithCodex).toHaveBeenCalledTimes(2);
   });
 
   it("returns a structured error when corrective normalization still fails", async () => {

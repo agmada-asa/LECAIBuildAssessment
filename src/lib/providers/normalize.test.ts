@@ -417,7 +417,7 @@ describe("normalizeProviderAnalysis", () => {
     );
   });
 
-  it("requires three candidates compatible with the conversation assessment", () => {
+  it("rejects candidates whose kind conflicts with the conversation assessment", () => {
     expect(() =>
       normalizeProviderAnalysis(
         {
@@ -445,7 +445,34 @@ describe("normalizeProviderAnalysis", () => {
         },
         log,
       ),
-    ).toThrow(/three distinct task interpretations/i);
+    ).toThrow(/every interpretation.*task/i);
+  });
+
+  it("accepts one grounded task when the source supports one clear decision", () => {
+    const result = normalizeProviderAnalysis(
+      {
+        conversationAssessment: {
+          kind: "actionable-task",
+          summary: "The user clearly requests a CSV export.",
+          evidenceMessageIds: ["M2"],
+          knownFacts: ["The raw rows must be sent as CSV."],
+          unknowns: [],
+        },
+        interpretations: [
+          { ...validAnalysis.interpretations[0], kind: "task" },
+        ],
+        constraints: validAnalysis.constraints,
+        taskBoundaries: [],
+        notes: "The source supports one decision-ready task.",
+      },
+      log,
+    );
+
+    expect(result.interpretations).toHaveLength(1);
+    expect(result.interpretations[0]).toMatchObject({
+      kind: "task",
+      title: "CSV export",
+    });
   });
 
   it("keeps similarly worded candidates when their canonical features conflict", () => {

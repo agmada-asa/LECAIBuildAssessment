@@ -199,13 +199,45 @@ export function evaluateHumanReview(
       message: "no interpretation has enough supporting evidence.",
     };
   }
-  if (taskFamily.confidence < HUMAN_REVIEW_POLICY.minimumRelativeConfidence) {
+  const supportingConstraintCount = new Set(
+    top.evidence
+      .filter(
+        (evidence) =>
+          evidence.kind === "constraints" && evidence.sentiment === "supports",
+      )
+      .map((evidence) => `${evidence.messageId ?? "unknown"}:${evidence.text}`),
+  ).size;
+  const hasConstraintConflict = top.evidence.some(
+    (evidence) =>
+      evidence.kind === "constraints" && evidence.sentiment === "conflicts",
+  );
+  const strongestValidAlternative = ranking
+    .slice(1)
+    .find((candidate) => candidate.valid !== false);
+  const totalMargin = top.total - (strongestValidAlternative?.total ?? 0);
+  // Several exact, conflict-free source matches are stronger evidence than a
+  // provider catalogue whose weaker framing variants divide softmax confidence.
+  const hasDecisiveExplicitEvidence =
+    top.total >= HUMAN_REVIEW_POLICY.minimumDecisiveTotal &&
+    totalMargin >= HUMAN_REVIEW_POLICY.minimumDecisiveTotalMargin &&
+    top.signals.constraints >= HUMAN_REVIEW_POLICY.minimumDecisiveConstraintScore &&
+    supportingConstraintCount >=
+      HUMAN_REVIEW_POLICY.minimumDecisiveConstraintMatches &&
+    !hasConstraintConflict;
+
+  if (
+    !hasDecisiveExplicitEvidence &&
+    taskFamily.confidence < HUMAN_REVIEW_POLICY.minimumRelativeConfidence
+  ) {
     return {
       code: "low_relative_confidence",
       message: "the leading task family does not clear 55% relative confidence.",
     };
   }
-  if (taskFamily.margin < HUMAN_REVIEW_POLICY.minimumTopFamilyMargin) {
+  if (
+    !hasDecisiveExplicitEvidence &&
+    taskFamily.margin < HUMAN_REVIEW_POLICY.minimumTopFamilyMargin
+  ) {
     return {
       code: "close_candidates",
       message: `the top two task families are only ${Math.round(taskFamily.margin * 100)} points apart.`,
@@ -228,6 +260,13 @@ export function generateClarificationQuestion(
   for (const [dimension, topValue] of topFeatures) {
     const runnerValue = runnerFeatures.get(dimension);
     if (runnerValue && runnerValue !== topValue) {
+      if (dimension === "task") {
+        const action = (title: string) => {
+          const withoutPunctuation = title.trim().replace(/[.!?]+$/, "");
+          return withoutPunctuation.charAt(0).toLowerCase() + withoutPunctuation.slice(1);
+        };
+        return `Should I ${action(top.title)} or ${action(runnerUp.title)}?`;
+      }
       const readable = (value: string) => value.replace(/-/g, " ");
       return `Should the ${readable(dimension)} be ${readable(topValue)} or ${readable(runnerValue)}?`;
     }

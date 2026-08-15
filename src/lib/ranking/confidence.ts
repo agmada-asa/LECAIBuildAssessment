@@ -18,6 +18,10 @@ export const HUMAN_REVIEW_POLICY = {
   minimumSharedTaskFeatures: 3,
   minimumSharedTaskFeatureRatio: 0.7,
   minimumSharedTitleRatio: 0.25,
+  minimumDecisiveTotal: 0.65,
+  minimumDecisiveTotalMargin: 0.1,
+  minimumDecisiveConstraintScore: 0.9,
+  minimumDecisiveConstraintMatches: 2,
 } as const;
 
 export type TaskFamilyConfidence = {

@@ -337,12 +337,12 @@ export function normalizeProviderAnalysis(
   const compatibleInterpretations = expectedCandidateKind
     ? interpretations.filter((candidate) => candidate.kind === expectedCandidateKind)
     : interpretations;
-  const requiresCompetingTasks =
-    conversationAssessment.kind === "actionable-task" ||
-    conversationAssessment.kind === "undetermined";
-  if (interpretations.length < (requiresCompetingTasks ? 3 : 1)) {
+  // Legacy provider snapshots without an assessment retain the old catalogue
+  // requirement. Assessed logs may truthfully expose one clear task or reading.
+  const requiresLegacyCatalogue = conversationAssessment.kind === "undetermined";
+  if (interpretations.length < (requiresLegacyCatalogue ? 3 : 1)) {
     throw new Error(
-      requiresCompetingTasks
+      requiresLegacyCatalogue
         ? "The provider must return at least three genuinely distinct interpretations."
         : "The provider must return a grounded interpretation matching its conversation assessment.",
     );
@@ -354,10 +354,10 @@ export function normalizeProviderAnalysis(
   }
   if (
     conversationAssessment.kind === "actionable-task" &&
-    compatibleInterpretations.length < 3
+    compatibleInterpretations.length !== interpretations.length
   ) {
     throw new Error(
-      "The provider must return at least three distinct task interpretations matching its conversation assessment.",
+      `Every interpretation must be a ${expectedCandidateKind} interpretation matching its conversation assessment.`,
     );
   }
   (analysis.taskBoundaries ?? []).forEach((boundary) => {

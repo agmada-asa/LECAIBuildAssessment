@@ -64,6 +64,57 @@ describe("evaluateHumanReview", () => {
     ).toMatchObject({ code: "close_candidates" });
   });
 
+  it("does not escalate a winner backed by several conflict-free explicit constraints", () => {
+    const winner = candidate("line-recalibration", 0.81, 0.45, [
+      "task:equipment-recalibration",
+      "target:line-2",
+      "action:stop-and-recalibrate",
+      "deadline:before-next-batch",
+    ], "Recalibrate production line 2");
+    winner.signals.constraints = 1;
+    winner.evidence = [
+      {
+        messageId: "M7",
+        text: "Source: “Stop line 2”",
+        kind: "constraints",
+        sentiment: "supports",
+        source: "constraint",
+      },
+      {
+        messageId: "M7",
+        text: "Source: “recalibrate it”",
+        kind: "constraints",
+        sentiment: "supports",
+        source: "constraint",
+      },
+      {
+        messageId: "M7",
+        text: "Source: “before the next batch”",
+        kind: "constraints",
+        sentiment: "supports",
+        source: "constraint",
+      },
+    ];
+
+    expect(
+      evaluateHumanReview([
+        winner,
+        candidate("between-batches", 0.68, 0.22, [
+          "task:between-batch-maintenance",
+          "target:line-2",
+          "action:stop-and-recalibrate",
+          "deadline:before-next-batch",
+        ]),
+        candidate("halt-line", 0.67, 0.21, [
+          "task:immediate-production-halt",
+          "target:line-2",
+          "action:stop-and-recalibrate",
+          "deadline:before-next-batch",
+        ]),
+      ]),
+    ).toBeUndefined();
+  });
+
   it.each([
     {
       name: "build dashboard variants",
@@ -277,6 +328,17 @@ describe("generateClarificationQuestion", () => {
     );
 
     expect(question).toBeUndefined();
+  });
+
+  it("uses candidate actions instead of exposing a generic task dimension", () => {
+    const question = generateClarificationQuestion(
+      candidate("line", 0.8, 0.52, ["task:equipment-recalibration"], "Recalibrate production line 2"),
+      candidate("tool", 0.78, 0.48, ["task:tool-recalibration"], "Recalibrate the changed tool"),
+    );
+
+    expect(question).toBe(
+      "Should I recalibrate production line 2 or recalibrate the changed tool?",
+    );
   });
 
   it("compares with the strongest competing task family rather than a framing variant", () => {

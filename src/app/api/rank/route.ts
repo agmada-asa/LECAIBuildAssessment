@@ -82,8 +82,20 @@ async function analyseLiveProvider(
   try {
     return await analyse();
   } catch (error) {
-    // Retrying cannot repair output that already failed JSON or schema parsing.
-    if (error instanceof SyntaxError || error instanceof z.ZodError) throw error;
+    // A fresh constrained generation can repair truncated JSON or a response
+    // that missed the provider schema. This is intentionally one bounded retry.
+    if (error instanceof SyntaxError || error instanceof z.ZodError) {
+      return provider === "codex"
+        ? analyseWithCodex(
+            conversation,
+            "The previous response was not valid structured output. Return only one complete JSON value that strictly satisfies the supplied schema.",
+          )
+        : analyseWithOpenAICompatible(
+            conversation,
+            process.env,
+            "The previous response was not valid structured output. Return only one complete JSON value that strictly satisfies the supplied schema.",
+          );
+    }
     if (error instanceof ProviderRequestError && !error.retryable) throw error;
     return analyse();
   }
@@ -212,7 +224,7 @@ export async function POST(request: Request) {
         analysis = await analyseLiveProvider(
           provider,
           formatConversationForProvider(conversation),
-          "The previous response passed the JSON schema but failed normalization. For actionable-task return at least three genuinely distinct task interpretations; for ordinary-conversation or insufficient-context return at least one grounded matching interpretation. Keep every candidate kind consistent with the conversation assessment, ground assessment message IDs and every constraint phrase in the source text, repeat a meaningful source word in each constraint label, and ensure every constraint dimension appears in candidate features.",
+          "The previous response passed the JSON schema but failed normalization. For actionable-task return one grounded task when the source supports one decision, or 2-5 mutually exclusive tasks only when the source supports genuine alternatives. For ordinary-conversation or insufficient-context return at least one grounded matching interpretation. Keep every candidate kind consistent with the conversation assessment, ground assessment message IDs and every constraint phrase in the source text, repeat a meaningful source word in each constraint label, and ensure every constraint dimension appears in candidate features.",
         );
         input = normalizeProviderAnalysis(analysis, conversation);
       } catch {
@@ -241,12 +253,11 @@ export async function POST(request: Request) {
       input.interpretations,
       embeddings,
     );
-    const requiresCompetingTasks =
-      input.conversationAssessment?.kind === "actionable-task" ||
+    const requiresLegacyCatalogue =
       !input.conversationAssessment ||
       input.conversationAssessment.kind === "undetermined";
     if (
-      requiresCompetingTasks &&
+      requiresLegacyCatalogue &&
       consolidated.candidates.length < 3 &&
       provider !== "demo"
     ) {
@@ -261,14 +272,14 @@ export async function POST(request: Request) {
         embeddings,
       );
     }
-    if (consolidated.candidates.length < (requiresCompetingTasks ? 3 : 1)) {
+    if (consolidated.candidates.length < (requiresLegacyCatalogue ? 3 : 1)) {
       return errorResponse(provider === "demo" ? 422 : 502, {
         code:
           provider === "demo"
             ? "candidate_generation_unavailable"
             : "invalid_provider_output",
         message:
-          requiresCompetingTasks
+          requiresLegacyCatalogue
             ? "Candidate generation did not produce three genuinely distinct decisions after semantic consolidation."
             : "Candidate generation did not produce a grounded reading after semantic consolidation.",
       });
